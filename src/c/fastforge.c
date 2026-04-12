@@ -1,4 +1,4 @@
-#include "fastforge.h"
+#include "fastforge_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -29,21 +29,6 @@ enum {
   PRESET_MENU_ITEM_COUNT = 8
 };
 
-typedef enum {
-  EDIT_FIELD_START = 0,
-  EDIT_FIELD_END = 1,
-  EDIT_FIELD_NOTE = 2
-} EditField;
-
-FastEntry history[MAX_FASTS];
-int history_count = 0;
-FastEntry current_fast = {0};
-uint16_t global_target_minutes = DEFAULT_TARGET_MINUTES;
-bool developer_mode_enabled = false;
-StreakData streak_data = {0};
-AppTimer *alarm_timer = NULL;
-time_t target_time = 0;
-
 static Window *s_menu_window;
 static Window *s_timer_window;
 static Window *s_goal_window;
@@ -58,7 +43,7 @@ static Window *s_running_edit_window;
 
 static SimpleMenuLayer *s_main_menu_layer;
 static SimpleMenuLayer *s_presets_menu_layer;
-static MenuLayer *s_history_menu_layer;
+MenuLayer *s_history_menu_layer;
 static SimpleMenuSection s_main_menu_sections[1];
 static SimpleMenuSection s_presets_menu_sections[1];
 static SimpleMenuItem s_main_menu_items[MAIN_MENU_ITEM_COUNT];
@@ -91,7 +76,7 @@ static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
 static TextLayer *s_stats_title_layer;
-static TextLayer *s_stats_body_layer;
+TextLayer *s_stats_body_layer;
 static TextLayer *s_stats_hint_layer;
 static TextLayer *s_history_edit_title_layer;
 static TextLayer *s_history_edit_start_layer;
@@ -122,7 +107,6 @@ static char s_menu_stop_subtitle[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
-static char s_stats_body_text[160];
 static char s_history_edit_title_text[48];
 static char s_history_edit_start_text[32];
 static char s_history_edit_end_text[32];
@@ -134,38 +118,7 @@ static char s_running_edit_elapsed_text[32];
 static char s_running_edit_goal_text[32];
 static int s_history_edit_index = -1;
 static FastEntry s_history_edit_draft = {0};
-static EditField s_history_edit_field = EDIT_FIELD_START;
-static bool s_history_edit_dirty = false;
-static time_t s_last_streak_refresh_day = 0;
-
-/* Snapshot history before AppMessage export so rows stay stable while sending. */
-#ifndef PBL_PLATFORM_APLITE
-typedef struct {
-  bool active;
-  int next_row;
-  int snapshot_count;
-  FastEntry snapshot[MAX_FASTS];
-} HistoryExportState;
-
-static HistoryExportState s_history_export = {0};
-#endif
-static const char *const s_note_tags[] = {
-  "",
-  "felt amazing",
-  "workout day",
-  "travel day",
-  "social day",
-  "busy day",
-  "reset day",
-  "late meal",
-  "high energy",
-  "rough day"
-};
-
 #ifdef DEBUG
-static bool s_fake_time_enabled = false;
-static int32_t s_fake_time_offset_seconds = 0;
-static int32_t s_current_fast_origin_offset_seconds = 0;
 static Window *s_debug_window;
 static SimpleMenuLayer *s_debug_menu_layer;
 static SimpleMenuSection s_debug_menu_sections[1];
@@ -173,29 +126,24 @@ static SimpleMenuItem s_debug_menu_items[6];
 static char s_debug_menu_clock_text[40];
 #endif
 
-static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
-static VibePattern s_alarm_pattern = {
-  .durations = s_alarm_vibe,
-  .num_segments = ARRAY_LENGTH(s_alarm_vibe),
-};
+typedef enum {
+  EDIT_FIELD_START = 0,
+  EDIT_FIELD_END = 1,
+  EDIT_FIELD_NOTE = 2
+} EditField;
 
 static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
-static void refresh_stats_window_content(void);
-static void history_menu_reload(void);
 static void refresh_running_edit_window_content(void);
 static void refresh_science_window_content(void);
 static void refresh_settings_window_content(void);
-static void refresh_all_ui_state(void);
-static void recompute_streak_data_from_history(void);
-static time_t entry_duration_seconds(const FastEntry *entry);
-static void recompute_streak_data_for_today(void);
-static bool refresh_streak_if_day_changed(void);
-static void request_history_export(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
 #endif
+
+static EditField s_history_edit_field = EDIT_FIELD_START;
+static bool s_history_edit_dirty = false;
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -205,893 +153,6 @@ static bool safe_push_window(Window *window, bool animated) {
     return false;
   }
   window_stack_push(window, animated);
-  return true;
-}
-
-static int clamp_history_count(int value) {
-  if (value < 0) {
-    return 0;
-  }
-  if (value > MAX_FASTS) {
-    return MAX_FASTS;
-  }
-  return value;
-}
-
-static void normalize_loaded_data(void) {
-  if (global_target_minutes == 0) {
-    global_target_minutes = DEFAULT_TARGET_MINUTES;
-  }
-
-  if (current_fast.start_time != 0 && current_fast.target_minutes == 0) {
-    current_fast.target_minutes = global_target_minutes;
-  }
-
-  if (current_fast.end_time != 0 && current_fast.end_time < current_fast.start_time) {
-    current_fast.end_time = 0;
-  }
-}
-
-static time_t local_day_start(time_t timestamp) {
-  if (timestamp <= 0) {
-    return 0;
-  }
-
-  struct tm tm_copy;
-  struct tm *tm_info = localtime(&timestamp);
-  if (!tm_info) {
-    return 0;
-  }
-
-  tm_copy = *tm_info;
-  tm_copy.tm_hour = 0;
-  tm_copy.tm_min = 0;
-  tm_copy.tm_sec = 0;
-  tm_copy.tm_isdst = -1;
-  return mktime(&tm_copy);
-}
-
-static int compare_time_t_ascending(const void *a, const void *b) {
-  const time_t time_a = *(const time_t *)a;
-  const time_t time_b = *(const time_t *)b;
-  if (time_a < time_b) {
-    return -1;
-  }
-  if (time_a > time_b) {
-    return 1;
-  }
-  return 0;
-}
-
-static bool is_next_local_day(time_t first_day, time_t second_day) {
-  if (first_day <= 0 || second_day <= 0) {
-    return false;
-  }
-
-  struct tm next_day_tm;
-  struct tm *tm_info = localtime(&first_day);
-  if (!tm_info) {
-    return false;
-  }
-
-  next_day_tm = *tm_info;
-  next_day_tm.tm_mday += 1;
-  next_day_tm.tm_hour = 0;
-  next_day_tm.tm_min = 0;
-  next_day_tm.tm_sec = 0;
-  next_day_tm.tm_isdst = -1;
-  time_t expected_next_day = mktime(&next_day_tm);
-  return expected_next_day == second_day;
-}
-
-#ifdef DEBUG
-static time_t fastforge_now(void) {
-  return time(NULL) + (s_fake_time_enabled ? s_fake_time_offset_seconds : 0);
-}
-#else
-static time_t fastforge_now(void) {
-  return time(NULL);
-}
-#endif
-
-static int collect_completion_days(time_t *completion_days, int max_days) {
-  int completion_day_count = 0;
-
-  for (int i = 0; i < history_count && completion_day_count < max_days; i++) {
-    const FastEntry *entry = &history[i];
-    time_t duration = entry_duration_seconds(entry);
-    if (duration <= 0 || entry->end_time <= 0) {
-      continue;
-    }
-
-    if (entry->end_time > streak_data.last_completed_fast_end) {
-      streak_data.last_completed_fast_end = entry->end_time;
-    }
-
-    time_t day_start = local_day_start(entry->end_time);
-    if (day_start <= 0) {
-      continue;
-    }
-    completion_days[completion_day_count++] = day_start;
-  }
-
-  return completion_day_count;
-}
-
-/* Streaks come from unique local completion days, sorted before counting runs. */
-static void apply_completion_days_to_streaks(time_t *completion_days, int completion_day_count) {
-  qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
-
-  uint16_t run_length = 0;
-  uint16_t longest = 0;
-  for (int i = 0; i < completion_day_count; i++) {
-    if (i == 0 || completion_days[i] == completion_days[i - 1]) {
-      if (i == 0) {
-        run_length = 1;
-      }
-      continue;
-    }
-
-    if (is_next_local_day(completion_days[i - 1], completion_days[i])) {
-      run_length++;
-    } else {
-      run_length = 1;
-    }
-
-    if (run_length > longest) {
-      longest = run_length;
-    }
-  }
-
-  if (longest == 0) {
-    longest = 1;
-  }
-
-  time_t today_day_start = local_day_start(fastforge_now());
-  time_t last_completion_day = completion_days[completion_day_count - 1];
-  if (last_completion_day == today_day_start ||
-      is_next_local_day(last_completion_day, today_day_start)) {
-    streak_data.current_streak = run_length;
-  } else {
-    streak_data.current_streak = 0;
-  }
-  streak_data.longest_streak = longest;
-}
-
-static void recompute_streak_data_from_history(void) {
-  streak_data.current_streak = 0;
-  streak_data.longest_streak = 0;
-  streak_data.last_completed_fast_end = 0;
-
-  if (history_count <= 0) {
-    return;
-  }
-
-  time_t completion_days[MAX_FASTS];
-  int completion_day_count = collect_completion_days(completion_days, MAX_FASTS);
-  if (completion_day_count == 0) {
-    return;
-  }
-
-  apply_completion_days_to_streaks(completion_days, completion_day_count);
-}
-
-static void recompute_streak_data_for_today(void) {
-  recompute_streak_data_from_history();
-  s_last_streak_refresh_day = local_day_start(fastforge_now());
-}
-
-static bool refresh_streak_if_day_changed(void) {
-  time_t today_day_start = local_day_start(fastforge_now());
-  if (today_day_start <= 0 || today_day_start == s_last_streak_refresh_day) {
-    return false;
-  }
-
-  recompute_streak_data_for_today();
-  save_all_data();
-  return true;
-}
-
-void save_all_data(void) {
-  persist_write_int(KEY_HISTORY_COUNT, history_count);
-  persist_write_data(KEY_HISTORY_DATA, history, sizeof(FastEntry) * history_count);
-  persist_write_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
-  persist_write_int(KEY_TARGET_MIN, global_target_minutes);
-  persist_write_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
-  persist_write_bool(KEY_DEV_MODE, developer_mode_enabled);
-#ifdef DEBUG
-  persist_write_int(KEY_DEBUG_FAKE_OFFSET, s_fake_time_offset_seconds);
-  persist_write_int(KEY_DEBUG_FAST_ORIGIN, s_current_fast_origin_offset_seconds);
-#endif
-}
-
-static void reset_loaded_data(void) {
-  history_count = 0;
-  memset(history, 0, sizeof(history));
-  memset(&current_fast, 0, sizeof(current_fast));
-  global_target_minutes = DEFAULT_TARGET_MINUTES;
-  developer_mode_enabled = false;
-  memset(&streak_data, 0, sizeof(streak_data));
-#ifdef DEBUG
-  s_fake_time_enabled = false;
-  s_fake_time_offset_seconds = 0;
-  s_current_fast_origin_offset_seconds = 0;
-#endif
-}
-
-static void load_persisted_base_data(void) {
-  if (persist_exists(KEY_HISTORY_COUNT)) {
-    history_count = clamp_history_count(persist_read_int(KEY_HISTORY_COUNT));
-  }
-  if (history_count > 0 && persist_exists(KEY_HISTORY_DATA)) {
-    const int expected_size = sizeof(FastEntry) * history_count;
-    const int read_size = persist_read_data(KEY_HISTORY_DATA, history, expected_size);
-    if (read_size != expected_size) {
-      history_count = 0;
-      memset(history, 0, sizeof(history));
-    }
-  }
-  if (persist_exists(KEY_CURRENT_FAST)) {
-    const int read_size = persist_read_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
-    if (read_size != (int)sizeof(FastEntry)) {
-      memset(&current_fast, 0, sizeof(current_fast));
-    }
-  }
-  if (persist_exists(KEY_TARGET_MIN)) {
-    const int read_target = persist_read_int(KEY_TARGET_MIN);
-    if (read_target > 0 && read_target <= UINT16_MAX) {
-      global_target_minutes = (uint16_t)read_target;
-    }
-  }
-  if (persist_exists(KEY_STREAK_DATA)) {
-    const int read_size = persist_read_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
-    if (read_size != (int)sizeof(StreakData)) {
-      memset(&streak_data, 0, sizeof(streak_data));
-    }
-  }
-  if (persist_exists(KEY_DEV_MODE)) {
-    developer_mode_enabled = persist_read_bool(KEY_DEV_MODE);
-  }
-}
-
-static void load_persisted_debug_data(void) {
-#ifdef DEBUG
-  if (persist_exists(KEY_DEBUG_FAKE_OFFSET)) {
-    s_fake_time_offset_seconds = persist_read_int(KEY_DEBUG_FAKE_OFFSET);
-    s_fake_time_enabled = s_fake_time_offset_seconds != 0;
-  }
-  if (persist_exists(KEY_DEBUG_FAST_ORIGIN)) {
-    s_current_fast_origin_offset_seconds = persist_read_int(KEY_DEBUG_FAST_ORIGIN);
-  }
-#endif
-}
-
-static void finish_loaded_data(void) {
-  normalize_loaded_data();
-  recompute_streak_data_for_today();
-}
-
-void load_all_data(void) {
-  reset_loaded_data();
-  load_persisted_base_data();
-  load_persisted_debug_data();
-  finish_loaded_data();
-}
-
-bool fast_is_running(void) {
-  return current_fast.start_time != 0;
-}
-
-static void format_hhmmss(time_t seconds, char *buffer, size_t size) {
-  if (seconds < 0) {
-    seconds = 0;
-  }
-  snprintf(buffer, size, "%02d:%02d:%02d",
-           (int)(seconds / 3600),
-           (int)((seconds % 3600) / 60),
-           (int)(seconds % 60));
-}
-
-static void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
-  if (seconds < 0) {
-    seconds = 0;
-  }
-  int hours = (int)(seconds / 3600);
-  int minutes = (int)((seconds % 3600) / 60);
-  snprintf(buffer, size, "%dh %02dm", hours, minutes);
-}
-
-static time_t entry_duration_seconds(const FastEntry *entry) {
-  if (!entry || entry->start_time == 0 || entry->end_time <= entry->start_time) {
-    return 0;
-  }
-  return entry->end_time - entry->start_time;
-}
-
-static void format_entry_datetime(time_t timestamp, char *buffer, size_t size) {
-  if (!buffer || size == 0) {
-    return;
-  }
-  if (timestamp <= 0) {
-    snprintf(buffer, size, "--");
-    return;
-  }
-
-  struct tm *tm_info = localtime(&timestamp);
-  if (!tm_info) {
-    snprintf(buffer, size, "--");
-    return;
-  }
-  strftime(buffer, size, "%b %d %H:%M", tm_info);
-}
-
-#ifndef PBL_PLATFORM_APLITE
-static size_t csv_append_text(char *buffer, size_t size, size_t offset, const char *value) {
-  if (!buffer || size == 0 || offset >= size) {
-    return offset;
-  }
-
-  bool needs_quotes = false;
-  if (value) {
-    for (const char *cursor = value; *cursor; cursor++) {
-      if (*cursor == ',' || *cursor == '"' || *cursor == '\n' || *cursor == '\r') {
-        needs_quotes = true;
-        break;
-      }
-    }
-  }
-
-  if (needs_quotes) {
-    if (offset + 1 < size) {
-      buffer[offset++] = '"';
-    }
-    if (value) {
-      for (const char *cursor = value; *cursor && offset + 1 < size; cursor++) {
-        if (*cursor == '"') {
-          if (offset + 2 >= size) {
-            break;
-          }
-          buffer[offset++] = '"';
-          buffer[offset++] = '"';
-        } else {
-          buffer[offset++] = *cursor;
-        }
-      }
-    }
-    if (offset + 1 < size) {
-      buffer[offset++] = '"';
-    }
-  } else {
-    if (value) {
-      for (const char *cursor = value; *cursor && offset + 1 < size; cursor++) {
-        buffer[offset++] = *cursor;
-      }
-    }
-  }
-
-  if (offset < size) {
-    buffer[offset] = '\0';
-  }
-  return offset;
-}
-
-static size_t csv_append_int(char *buffer, size_t size, size_t offset, long value) {
-  char number_text[16];
-  snprintf(number_text, sizeof(number_text), "%ld", value);
-  return csv_append_text(buffer, size, offset, number_text);
-}
-
-static void format_history_csv_row(const FastEntry *entry, char *buffer, size_t size) {
-  if (!buffer || size == 0) {
-    return;
-  }
-
-  buffer[0] = '\0';
-  if (!entry) {
-    return;
-  }
-
-  size_t offset = 0;
-  offset = csv_append_int(buffer, size, offset, (long)entry->start_time);
-  if (offset + 1 < size) {
-    buffer[offset++] = ',';
-    buffer[offset] = '\0';
-  }
-  offset = csv_append_int(buffer, size, offset, (long)entry->end_time);
-  if (offset + 1 < size) {
-    buffer[offset++] = ',';
-    buffer[offset] = '\0';
-  }
-  offset = csv_append_int(buffer, size, offset, (long)entry->target_minutes);
-  if (offset + 1 < size) {
-    buffer[offset++] = ',';
-    buffer[offset] = '\0';
-  }
-  offset = csv_append_text(buffer, size, offset, entry->note);
-  if (offset + 1 < size) {
-    buffer[offset++] = ',';
-    buffer[offset] = '\0';
-  }
-  (void)csv_append_int(buffer, size, offset, (long)entry->max_stage_reached);
-}
-
-static void format_history_csv_header(char *buffer, size_t size) {
-  if (!buffer || size == 0) {
-    return;
-  }
-  snprintf(buffer, size, "start_time,end_time,target_minutes,note,max_stage_reached");
-}
-
-static void stop_history_export(void) {
-  s_history_export.active = false;
-  s_history_export.next_row = 0;
-  s_history_export.snapshot_count = 0;
-  memset(s_history_export.snapshot, 0, sizeof(s_history_export.snapshot));
-}
-#endif
-
-static const char *milestone_badge_label_for_level(uint8_t stage_level) {
-  if (stage_level >= 3) {
-    return "Deep Ketosis";
-  }
-  if (stage_level == 2) {
-    return "Ketosis";
-  }
-  if (stage_level == 1) {
-    return "Fat Burn";
-  }
-  return NULL;
-}
-
-static void format_optional_tag_text(const char *prefix, const char *value, char *buffer, size_t size) {
-  if (!buffer || size == 0) {
-    return;
-  }
-
-  if (!value || value[0] == '\0') {
-    snprintf(buffer, size, "%s--", prefix ? prefix : "");
-    return;
-  }
-
-  snprintf(buffer, size, "%s%s", prefix ? prefix : "", value);
-}
-
-static const char *history_entry_badge_label(const FastEntry *entry) {
-  if (!entry) {
-    return NULL;
-  }
-  return milestone_badge_label_for_level(entry->max_stage_reached);
-}
-
-static int note_tag_index_for_entry(const FastEntry *entry) {
-  if (!entry || entry->note[0] == '\0') {
-    return 0;
-  }
-
-  for (int i = 1; i < (int)ARRAY_LENGTH(s_note_tags); i++) {
-    if (strncmp(entry->note, s_note_tags[i], sizeof(entry->note)) == 0) {
-      return i;
-    }
-  }
-
-  return 0;
-}
-
-static void set_entry_note_from_tag_index(FastEntry *entry, int tag_index) {
-  if (!entry) {
-    return;
-  }
-
-  if (tag_index <= 0 || tag_index >= (int)ARRAY_LENGTH(s_note_tags)) {
-    memset(entry->note, 0, sizeof(entry->note));
-    return;
-  }
-
-  snprintf(entry->note, sizeof(entry->note), "%s", s_note_tags[tag_index]);
-}
-
-static int history_index_for_row(int row) {
-  if (row < 0 || row >= history_count) {
-    return -1;
-  }
-  return history_count - 1 - row;
-}
-
-static int compare_history_entries_by_end_time(const void *a, const void *b) {
-  const FastEntry *entry_a = a;
-  const FastEntry *entry_b = b;
-  if (entry_a->end_time < entry_b->end_time) {
-    return -1;
-  }
-  if (entry_a->end_time > entry_b->end_time) {
-    return 1;
-  }
-  if (entry_a->start_time < entry_b->start_time) {
-    return -1;
-  }
-  if (entry_a->start_time > entry_b->start_time) {
-    return 1;
-  }
-  return 0;
-}
-
-static void sort_history_by_end_time(void) {
-  if (history_count <= 1) {
-    return;
-  }
-  qsort(history, (size_t)history_count, sizeof(FastEntry), compare_history_entries_by_end_time);
-}
-
-static void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size) {
-  if (!title || !subtitle || title_size == 0 || subtitle_size == 0) {
-    return;
-  }
-  if (history_count == 0) {
-    snprintf(title, title_size, "No completed fasts");
-    snprintf(subtitle, subtitle_size, "Start + stop a fast first");
-    return;
-  }
-
-  int history_index = history_index_for_row(row);
-  if (history_index < 0) {
-    snprintf(title, title_size, "Unavailable");
-    subtitle[0] = '\0';
-    return;
-  }
-
-  const FastEntry *entry = &history[history_index];
-  char date_text[24];
-  char duration_text[20];
-  char badge_text[24];
-  char note_text[32];
-  const char *badge_label = history_entry_badge_label(entry);
-  format_entry_datetime(entry->end_time, date_text, sizeof(date_text));
-  format_duration_hours_minutes(entry_duration_seconds(entry), duration_text, sizeof(duration_text));
-  snprintf(title, title_size, "%s", date_text);
-  note_text[0] = '\0';
-  if (entry->note[0] != '\0') {
-    snprintf(note_text, sizeof(note_text), " | %s", entry->note);
-  }
-  badge_text[0] = '\0';
-  if (badge_label) {
-    snprintf(badge_text, sizeof(badge_text), " | %s", badge_label);
-  }
-  snprintf(subtitle, subtitle_size, "%s%s%s", duration_text, badge_text, note_text);
-}
-
-static void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds,
-                                  int *completed_count, int *successful_count) {
-  time_t total_seconds_value = 0;
-  time_t longest_seconds_value = 0;
-  int completed_count_value = 0;
-  int successful_count_value = 0;
-
-  for (int i = 0; i < history_count; i++) {
-    const FastEntry *entry = &history[i];
-    time_t duration = entry_duration_seconds(entry);
-    if (duration <= 0) {
-      continue;
-    }
-
-    completed_count_value++;
-    total_seconds_value += duration;
-    if (duration > longest_seconds_value) {
-      longest_seconds_value = duration;
-    }
-    if (entry->target_minutes > 0 && duration >= (time_t)entry->target_minutes * 60) {
-      successful_count_value++;
-    }
-  }
-
-  if (total_seconds) {
-    *total_seconds = total_seconds_value;
-  }
-  if (longest_seconds) {
-    *longest_seconds = longest_seconds_value;
-  }
-  if (completed_count) {
-    *completed_count = completed_count_value;
-  }
-  if (successful_count) {
-    *successful_count = successful_count_value;
-  }
-}
-
-static void format_stats_window_body(time_t total_seconds, time_t longest_seconds,
-                                     int completed_count, int successful_count) {
-  if (completed_count == 0) {
-    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
-             "No completed fasts yet.\n"
-             "Start and stop your first\n"
-             "fast to populate stats.\n"
-             "Streak: %u current / %u best",
-             streak_data.current_streak,
-             streak_data.longest_streak);
-  } else {
-    char avg_text[20];
-    char total_text[20];
-    char longest_text[20];
-    time_t average_seconds = total_seconds / completed_count;
-    int success_rate = (successful_count * 100 + completed_count / 2) / completed_count;
-
-    format_duration_hours_minutes(average_seconds, avg_text, sizeof(avg_text));
-    format_duration_hours_minutes(total_seconds, total_text, sizeof(total_text));
-    format_duration_hours_minutes(longest_seconds, longest_text, sizeof(longest_text));
-    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
-             "Avg fast: %s\n"
-             "Total fasted: %s\n"
-             "Success: %d%% (%d/%d)\n"
-             "Longest: %s\n"
-             "Streak: %u / %u",
-             avg_text,
-             total_text,
-             success_rate,
-             successful_count,
-             completed_count,
-             longest_text,
-             streak_data.current_streak,
-             streak_data.longest_streak);
-  }
-}
-
-static void refresh_stats_window_content(void) {
-  if (!s_stats_body_layer) {
-    return;
-  }
-
-  time_t total_seconds = 0;
-  time_t longest_seconds = 0;
-  int completed_count = 0;
-  int successful_count = 0;
-  collect_stats_summary(&total_seconds, &longest_seconds, &completed_count, &successful_count);
-  format_stats_window_body(total_seconds, longest_seconds, completed_count, successful_count);
-  text_layer_set_text(s_stats_body_layer, s_stats_body_text);
-}
-
-static uint8_t stage_level_for_elapsed(time_t elapsed_seconds) {
-  if (elapsed_seconds >= 24 * 3600) {
-    return 3;
-  }
-  if (elapsed_seconds >= 18 * 3600) {
-    return 2;
-  }
-  if (elapsed_seconds >= 12 * 3600) {
-    return 1;
-  }
-  return 0;
-}
-
-static const char *stage_text_for_elapsed(time_t elapsed_seconds) {
-  if (elapsed_seconds >= 24 * 3600) {
-    return "DEEP KETOSIS";
-  }
-  if (elapsed_seconds >= 18 * 3600) {
-    return "EARLY KETOSIS";
-  }
-  if (elapsed_seconds >= 12 * 3600) {
-    return "FAT BURN";
-  }
-  return "GLYCOGEN";
-}
-
-#ifndef PBL_PLATFORM_APLITE
-static void history_export_send_next(void);
-
-static void history_export_on_sent(DictionaryIterator *iterator, void *context) {
-  (void)iterator;
-  (void)context;
-  if (!s_history_export.active) {
-    return;
-  }
-
-  s_history_export.next_row++;
-  if (s_history_export.next_row >= s_history_export.snapshot_count + 1) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "History export finished with %d rows", s_history_export.snapshot_count + 1);
-    stop_history_export();
-    return;
-  }
-
-  history_export_send_next();
-}
-
-static void history_export_on_failed(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
-  (void)iterator;
-  (void)context;
-  APP_LOG(APP_LOG_LEVEL_ERROR, "History export failed at row %d (%d)", s_history_export.next_row, reason);
-  stop_history_export();
-}
-
-static const char *history_export_status_for_row(void) {
-  if (s_history_export.next_row == 0) {
-    return s_history_export.snapshot_count == 0 ? "EXPORT_COMPLETE" : "EXPORT_STARTED";
-  }
-  if (s_history_export.next_row >= s_history_export.snapshot_count) {
-    return "EXPORT_COMPLETE";
-  }
-  return "EXPORT_ROW";
-}
-
-static void history_export_send_message(const char *row_text) {
-  DictionaryIterator *outbox = NULL;
-  AppMessageResult result = app_message_outbox_begin(&outbox);
-  if (result != APP_MSG_OK || !outbox) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to start history export outbox (%d)", result);
-    stop_history_export();
-    return;
-  }
-
-  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_SEQUENCE, s_history_export.next_row);
-  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_TOTAL, s_history_export.snapshot_count + 1);
-  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_ROW, row_text ? row_text : "");
-  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_STATUS, history_export_status_for_row());
-  result = app_message_outbox_send();
-  if (result != APP_MSG_OK) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to queue history export message (%d)", result);
-    stop_history_export();
-  }
-}
-
-static void history_export_send_next(void) {
-  if (!s_history_export.active) {
-    return;
-  }
-
-  char row_text[128];
-  if (s_history_export.next_row == 0) {
-    format_history_csv_header(row_text, sizeof(row_text));
-  } else {
-    int history_index = s_history_export.next_row - 1;
-    if (history_index < 0 || history_index >= s_history_export.snapshot_count) {
-      stop_history_export();
-      return;
-    }
-    format_history_csv_row(&s_history_export.snapshot[history_index], row_text, sizeof(row_text));
-  }
-
-  history_export_send_message(row_text);
-}
-
-static bool history_export_begin(void) {
-  if (s_history_export.active) {
-    return false;
-  }
-
-  s_history_export.active = true;
-  s_history_export.next_row = 0;
-  s_history_export.snapshot_count = history_count;
-  if (s_history_export.snapshot_count > 0) {
-    memcpy(s_history_export.snapshot, history, sizeof(FastEntry) * (size_t)s_history_export.snapshot_count);
-  }
-  history_export_send_next();
-  return true;
-}
-
-static void history_export_inbox_received(DictionaryIterator *iterator, void *context) {
-  (void)context;
-  Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_EXPORT_COMMAND);
-  if (!command_tuple || command_tuple->type != TUPLE_CSTRING) {
-    return;
-  }
-
-  if (strcmp(command_tuple->value->cstring, "EXPORT_HISTORY") == 0) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "Received export request from companion");
-    history_export_begin();
-  }
-}
-#endif
-
-static void update_max_stage_if_needed(time_t elapsed_seconds) {
-  if (!fast_is_running()) {
-    return;
-  }
-
-  uint8_t stage_level = stage_level_for_elapsed(elapsed_seconds);
-  if (stage_level > current_fast.max_stage_reached) {
-    current_fast.max_stage_reached = stage_level;
-    save_all_data();
-  }
-}
-
-static bool running_fast_is_at_target(time_t now) {
-  if (!fast_is_running() || current_fast.target_minutes == 0) {
-    return false;
-  }
-  return now >= current_fast.start_time + (time_t)current_fast.target_minutes * 60;
-}
-
-static void append_history_entry(const FastEntry *entry) {
-  if (!entry) {
-    return;
-  }
-
-  if (history_count < MAX_FASTS) {
-    history[history_count++] = *entry;
-    return;
-  }
-
-  memmove(&history[0], &history[1], sizeof(FastEntry) * (MAX_FASTS - 1));
-  history[MAX_FASTS - 1] = *entry;
-}
-
-static uint16_t resolve_target_minutes(uint16_t preset_target_minutes) {
-  if (preset_target_minutes > 0) {
-    return preset_target_minutes;
-  }
-  if (global_target_minutes == 0) {
-    global_target_minutes = DEFAULT_TARGET_MINUTES;
-  }
-  return global_target_minutes;
-}
-
-static void alarm_callback(void *data);
-
-static void schedule_alarm_if_needed(void) {
-  if (alarm_timer) {
-    app_timer_cancel(alarm_timer);
-    alarm_timer = NULL;
-  }
-
-  if (!fast_is_running() || current_fast.target_minutes == 0) {
-    target_time = 0;
-    return;
-  }
-
-  target_time = current_fast.start_time + (time_t)current_fast.target_minutes * 60;
-  time_t now = fastforge_now();
-  if (target_time <= now) {
-    alarm_callback(NULL);
-    return;
-  }
-
-  uint32_t ms_until_alarm = (uint32_t)(target_time - now) * 1000;
-  alarm_timer = app_timer_register(ms_until_alarm, alarm_callback, NULL);
-}
-
-bool fast_start(uint16_t preset_target_minutes) {
-  if (fast_is_running()) {
-    return false;
-  }
-
-  current_fast.start_time = fastforge_now();
-  current_fast.end_time = 0;
-  current_fast.target_minutes = resolve_target_minutes(preset_target_minutes);
-  memset(current_fast.note, 0, sizeof(current_fast.note));
-  current_fast.max_stage_reached = 0;
-#ifdef DEBUG
-  s_current_fast_origin_offset_seconds = s_fake_time_enabled ? s_fake_time_offset_seconds : 0;
-#endif
-  save_all_data();
-  schedule_alarm_if_needed();
-  APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld target=%u",
-          (long)current_fast.start_time, current_fast.target_minutes);
-  return true;
-}
-
-bool fast_stop(void) {
-  if (!fast_is_running()) {
-    return false;
-  }
-
-  FastEntry completed = current_fast;
-  completed.end_time = fastforge_now();
-  if (completed.end_time < completed.start_time) {
-    completed.end_time = completed.start_time;
-  }
-  append_history_entry(&completed);
-  sort_history_by_end_time();
-  recompute_streak_data_for_today();
-  memset(&current_fast, 0, sizeof(current_fast));
-#ifdef DEBUG
-  s_current_fast_origin_offset_seconds = 0;
-#endif
-  if (alarm_timer) {
-    app_timer_cancel(alarm_timer);
-    alarm_timer = NULL;
-  }
-  target_time = 0;
-  save_all_data();
-  history_menu_reload();
-  APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved history_count=%d", history_count);
   return true;
 }
 
@@ -1110,7 +171,7 @@ static void set_placeholder_content(const char *title, const char *body, const c
   }
 }
 
-static void show_placeholder_window(const char *title, const char *body, const char *hint) {
+void show_placeholder_window(const char *title, const char *body, const char *hint) {
   set_placeholder_content(title, body, hint);
   if (!window_stack_contains_window(s_detail_window)) {
     window_stack_push(s_detail_window, true);
@@ -1312,7 +373,7 @@ static void debug_force_goal_alarm(void) {
     app_timer_cancel(alarm_timer);
     alarm_timer = NULL;
   }
-  alarm_callback(NULL);
+  fastforge_force_goal_alarm();
   debug_refresh_menu();
 }
 
@@ -1552,25 +613,15 @@ static void sync_main_menu_state(void) {
   }
 }
 
-static void refresh_all_ui_state(void) {
+void refresh_all_ui_state(void) {
   refresh_timer_view();
   refresh_goal_window_content();
   sync_main_menu_state();
 }
 
-static void show_goal_reached_window(void) {
+void show_goal_reached_window(void) {
   refresh_goal_window_content();
   safe_push_window(s_goal_window, true);
-}
-
-static void alarm_callback(void *data) {
-  (void)data;
-  alarm_timer = NULL;
-  target_time = 0;
-  vibes_enqueue_custom_pattern(s_alarm_pattern);
-  light_enable_interaction();
-  show_goal_reached_window();
-  refresh_all_ui_state();
 }
 
 static void start_fast_from_preset(uint16_t target_minutes) {
@@ -1729,12 +780,6 @@ static void history_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_
   history_open_edit_for_row(cell_index->row);
 }
 
-static void history_menu_reload(void) {
-  if (s_history_menu_layer) {
-    menu_layer_reload_data(s_history_menu_layer);
-  }
-}
-
 static void history_adjust_edit_draft_by_minutes(int delta_minutes) {
   if (s_history_edit_index < 0 || s_history_edit_index >= history_count) {
     return;
@@ -1761,7 +806,7 @@ static void history_adjust_edit_note_by_delta(int delta) {
   }
 
   int tag_index = note_tag_index_for_entry(&s_history_edit_draft);
-  int tag_count = (int)ARRAY_LENGTH(s_note_tags);
+  int tag_count = history_note_tag_count();
   tag_index = (tag_index + delta) % tag_count;
   if (tag_index < 0) {
     tag_index += tag_count;
@@ -2012,25 +1057,6 @@ static void menu_backup_callback(int index, void *context) {
   (void)index;
   (void)context;
   request_history_export();
-}
-
-static void request_history_export(void) {
-#ifndef PBL_PLATFORM_APLITE
-  if (!history_export_begin()) {
-    show_placeholder_window("BACKUP BUSY",
-                            "A history export is already in progress.",
-                            "BACK Menu");
-    return;
-  }
-
-  show_placeholder_window("BACKUP TO PHONE",
-                          "CSV export started.\nCompanion stub stores the file.",
-                          "BACK Menu");
-#else
-  show_placeholder_window("BACKUP UNAVAILABLE",
-                          "AppMessage backup is disabled on Aplite.",
-                          "BACK Menu");
-#endif
 }
 
 static void preset_16h_callback(int index, void *context) {
@@ -2911,9 +1937,7 @@ static void init(void) {
   if (app_message_result != APP_MSG_OK) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "app_message_open failed (%d)", app_message_result);
   } else {
-    app_message_register_inbox_received(history_export_inbox_received);
-    app_message_register_outbox_sent(history_export_on_sent);
-    app_message_register_outbox_failed(history_export_on_failed);
+    fastforge_history_register_app_message_handlers();
   }
 #endif
   tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
@@ -2932,7 +1956,7 @@ static void deinit(void) {
     alarm_timer = NULL;
   }
 #ifndef PBL_PLATFORM_APLITE
-  stop_history_export();
+  fastforge_history_stop_export();
 #endif
   target_time = 0;
   save_all_data();
