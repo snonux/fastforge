@@ -13,6 +13,10 @@ static Window *s_main_window;
 static TextLayer *s_text_layer;
 static char s_status_text[96];
 
+bool fast_is_running(void) {
+  return current_fast.start_time != 0;
+}
+
 static int clamp_history_count(int value) {
   if (value < 0) {
     return 0;
@@ -86,7 +90,7 @@ void load_all_data(void) {
 }
 
 static void refresh_status_text(void) {
-  if (current_fast.start_time == 0) {
+  if (!fast_is_running()) {
     snprintf(s_status_text, sizeof(s_status_text), "No active fast\nTarget: %u min\nSELECT: Start\nDOWN: Quit",
              global_target_minutes);
   } else {
@@ -94,8 +98,8 @@ static void refresh_status_text(void) {
     const int elapsed_hours = (int)(elapsed / 3600);
     const int elapsed_minutes = (int)((elapsed % 3600) / 60);
     snprintf(s_status_text, sizeof(s_status_text),
-             "Fast running\n%02dh %02dm elapsed\nSELECT: Stop\nDOWN: Quit",
-             elapsed_hours, elapsed_minutes);
+             "Fast running (%u min)\n%02dh %02dm elapsed\nSELECT: Stop\nDOWN: Quit",
+             current_fast.target_minutes, elapsed_hours, elapsed_minutes);
   }
   text_layer_set_text(s_text_layer, s_status_text);
 }
@@ -122,29 +126,63 @@ static void mark_fast_completed(time_t end_time) {
   streak_data.last_completed_fast_end = end_time;
 }
 
+static uint16_t resolve_target_minutes(uint16_t preset_target_minutes) {
+  if (preset_target_minutes > 0) {
+    global_target_minutes = preset_target_minutes;
+  }
+  if (global_target_minutes == 0) {
+    global_target_minutes = DEFAULT_TARGET_MINUTES;
+  }
+  return global_target_minutes;
+}
+
+bool fast_start(uint16_t preset_target_minutes) {
+  if (fast_is_running()) {
+    return false;
+  }
+
+  current_fast.start_time = time(NULL);
+  current_fast.end_time = 0;
+  current_fast.target_minutes = resolve_target_minutes(preset_target_minutes);
+  memset(current_fast.note, 0, sizeof(current_fast.note));
+  current_fast.max_stage_reached = 0;
+  save_all_data();
+
+  APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld (target=%u)",
+          (long)current_fast.start_time, current_fast.target_minutes);
+  return true;
+}
+
+bool fast_stop(void) {
+  if (!fast_is_running()) {
+    return false;
+  }
+
+  FastEntry completed = current_fast;
+  completed.end_time = time(NULL);
+  if (completed.end_time < completed.start_time) {
+    completed.end_time = completed.start_time;
+  }
+  append_history_entry(&completed);
+  mark_fast_completed(completed.end_time);
+  memset(&current_fast, 0, sizeof(current_fast));
+  save_all_data();
+
+  APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved to history (count=%d)", history_count);
+  return true;
+}
+
 // ==================== BUTTON HANDLERS ====================
 
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
 
-  if (current_fast.start_time == 0) {
-    current_fast.start_time = time(NULL);
-    current_fast.end_time = 0;
-    current_fast.target_minutes = global_target_minutes;
-    memset(current_fast.note, 0, sizeof(current_fast.note));
-    current_fast.max_stage_reached = 0;
-    APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld", (long)current_fast.start_time);
+  if (fast_is_running()) {
+    fast_stop();
   } else {
-    FastEntry completed = current_fast;
-    completed.end_time = time(NULL);
-    append_history_entry(&completed);
-    mark_fast_completed(completed.end_time);
-    memset(&current_fast, 0, sizeof(current_fast));
-    APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved to history (count=%d)", history_count);
+    fast_start(0);
   }
-
-  save_all_data();
   refresh_status_text();
 }
 
