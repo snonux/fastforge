@@ -12,6 +12,7 @@ time_t target_time = 0;
 static Window *s_main_window;
 static Window *s_goal_window;
 static Layer *s_goal_background_layer;
+static Layer *s_progress_layer;
 static TextLayer *s_title_layer;
 static TextLayer *s_timer_layer;
 static TextLayer *s_detail_layer;
@@ -24,7 +25,7 @@ static TextLayer *s_goal_hint_layer;
 static char s_title_text[24];
 static char s_timer_text[16];
 static char s_detail_text[48];
-static char s_stage_text[24];
+static char s_stage_text[32];
 static char s_goal_time_text[24];
 static char s_goal_stage_text[24];
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
@@ -35,6 +36,62 @@ static VibePattern s_alarm_pattern = {
 
 static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
+
+static int progress_width_for_elapsed(time_t elapsed_seconds, uint32_t total_seconds, int width) {
+  if (width <= 0 || total_seconds == 0) {
+    return 0;
+  }
+  if (elapsed_seconds <= 0) {
+    return 0;
+  }
+  if ((uint32_t)elapsed_seconds >= total_seconds) {
+    return width;
+  }
+  return (int)((elapsed_seconds * width) / (time_t)total_seconds);
+}
+
+static int tick_x_for_seconds(uint32_t total_seconds, uint32_t tick_seconds, int width) {
+  if (width <= 0 || total_seconds == 0 || tick_seconds > total_seconds) {
+    return -1;
+  }
+  int tick_x = (int)((tick_seconds * (uint32_t)width) / total_seconds);
+  if (tick_x >= width) {
+    tick_x = width - 1;
+  }
+  return tick_x;
+}
+
+static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, bounds, 2, GCornersAll);
+
+  if (!fast_is_running()) {
+    return;
+  }
+
+  time_t elapsed = time(NULL) - current_fast.start_time;
+  if (elapsed < 0) {
+    elapsed = 0;
+  }
+
+  uint32_t total_seconds = (uint32_t)current_fast.target_minutes * 60;
+  int fill_width = progress_width_for_elapsed(elapsed, total_seconds, bounds.size.w);
+  if (fill_width > 0) {
+    graphics_context_set_fill_color(ctx, GColorGreen);
+    graphics_fill_rect(ctx, GRect(0, 0, fill_width, bounds.size.h), 2, GCornersAll);
+  }
+
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  int tick_12h_x = tick_x_for_seconds(total_seconds, 12 * 3600, bounds.size.w);
+  int tick_24h_x = tick_x_for_seconds(total_seconds, 24 * 3600, bounds.size.w);
+  if (tick_12h_x >= 0) {
+    graphics_draw_line(ctx, GPoint(tick_12h_x, 0), GPoint(tick_12h_x, bounds.size.h - 1));
+  }
+  if (tick_24h_x >= 0) {
+    graphics_draw_line(ctx, GPoint(tick_24h_x, 0), GPoint(tick_24h_x, bounds.size.h - 1));
+  }
+}
 
 static void goal_background_update_proc(Layer *layer, GContext *ctx) {
   graphics_context_set_fill_color(ctx, GColorBlack);
@@ -183,13 +240,16 @@ static uint8_t stage_level_for_elapsed(time_t elapsed_seconds) {
 }
 
 static const char *stage_text_for_elapsed(time_t elapsed_seconds) {
+  if (elapsed_seconds >= 24 * 3600) {
+    return "DEEP KETOSIS";
+  }
   if (elapsed_seconds >= 18 * 3600) {
-    return "Stage: KETOSIS";
+    return "EARLY KETOSIS";
   }
   if (elapsed_seconds >= 12 * 3600) {
-    return "Stage: FAT BURN";
+    return "FAT BURN";
   }
-  return "Stage: GLYCOGEN";
+  return "GLYCOGEN";
 }
 
 static void update_max_stage_if_needed(time_t elapsed_seconds) {
@@ -221,7 +281,7 @@ static void refresh_goal_window_content(void) {
   char elapsed_text[16];
   format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
   snprintf(s_goal_time_text, sizeof(s_goal_time_text), "Elapsed %s", elapsed_text);
-  snprintf(s_goal_stage_text, sizeof(s_goal_stage_text), "%s", stage_text_for_elapsed(elapsed));
+  snprintf(s_goal_stage_text, sizeof(s_goal_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
 
   text_layer_set_text(s_goal_time_layer, s_goal_time_text);
   text_layer_set_text(s_goal_stage_layer, s_goal_stage_text);
@@ -261,7 +321,7 @@ static void refresh_timer_view(void) {
       snprintf(s_detail_text, sizeof(s_detail_text), "No target set");
     }
 
-    snprintf(s_stage_text, sizeof(s_stage_text), "%s", stage_text_for_elapsed(elapsed));
+    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
     text_layer_set_text(s_hint_layer, "SELECT Stop   DOWN Quit");
   }
 
@@ -269,6 +329,9 @@ static void refresh_timer_view(void) {
   text_layer_set_text(s_timer_layer, s_timer_text);
   text_layer_set_text(s_detail_layer, s_detail_text);
   text_layer_set_text(s_stage_layer, s_stage_text);
+  if (s_progress_layer) {
+    layer_mark_dirty(s_progress_layer);
+  }
 }
 
 static void append_history_entry(const FastEntry *entry) {
@@ -427,13 +490,16 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_detail_layer, GTextAlignmentCenter);
   text_layer_set_font(s_detail_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
 
-  s_stage_layer = text_layer_create(GRect(0, 102, bounds.size.w, 24));
+  s_progress_layer = layer_create(GRect(10, 104, bounds.size.w - 20, 12));
+  layer_set_update_proc(s_progress_layer, timer_progress_update_proc);
+
+  s_stage_layer = text_layer_create(GRect(0, 118, bounds.size.w, 20));
   text_layer_set_background_color(s_stage_layer, GColorClear);
   text_layer_set_text_color(s_stage_layer, GColorBlack);
   text_layer_set_text_alignment(s_stage_layer, GTextAlignmentCenter);
   text_layer_set_font(s_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
 
-  s_hint_layer = text_layer_create(GRect(0, 136, bounds.size.w, 30));
+  s_hint_layer = text_layer_create(GRect(0, 138, bounds.size.w, 28));
   text_layer_set_background_color(s_hint_layer, GColorClear);
   text_layer_set_text_color(s_hint_layer, GColorBlack);
   text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
@@ -442,6 +508,7 @@ static void window_load(Window *window) {
   layer_add_child(window_layer, text_layer_get_layer(s_title_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_timer_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_detail_layer));
+  layer_add_child(window_layer, s_progress_layer);
   layer_add_child(window_layer, text_layer_get_layer(s_stage_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_hint_layer));
 
@@ -451,6 +518,8 @@ static void window_load(Window *window) {
 static void window_unload(Window *window) {
   (void)window;
   save_all_data();
+  layer_destroy(s_progress_layer);
+  s_progress_layer = NULL;
   text_layer_destroy(s_title_layer);
   text_layer_destroy(s_timer_layer);
   text_layer_destroy(s_detail_layer);
