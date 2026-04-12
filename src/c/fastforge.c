@@ -27,7 +27,8 @@ enum {
 
 typedef enum {
   EDIT_FIELD_START = 0,
-  EDIT_FIELD_END = 1
+  EDIT_FIELD_END = 1,
+  EDIT_FIELD_NOTE = 2
 } EditField;
 
 FastEntry history[MAX_FASTS];
@@ -118,10 +119,10 @@ static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
 static char s_stats_body_text[160];
-static char s_history_edit_title_text[24];
+static char s_history_edit_title_text[48];
 static char s_history_edit_start_text[32];
 static char s_history_edit_end_text[32];
-static char s_history_edit_duration_text[32];
+static char s_history_edit_duration_text[48];
 static char s_history_edit_stage_text[24];
 static char s_history_edit_hint_text[40];
 static char s_running_edit_start_text[32];
@@ -132,6 +133,19 @@ static FastEntry s_history_edit_draft = {0};
 static EditField s_history_edit_field = EDIT_FIELD_START;
 static bool s_history_edit_dirty = false;
 static time_t s_last_streak_refresh_day = 0;
+
+static const char *const s_note_tags[] = {
+  "",
+  "felt amazing",
+  "workout day",
+  "travel day",
+  "social day",
+  "busy day",
+  "reset day",
+  "late meal",
+  "high energy",
+  "rough day"
+};
 
 #ifdef DEBUG
 static bool s_fake_time_enabled = false;
@@ -471,17 +485,64 @@ static void format_entry_datetime(time_t timestamp, char *buffer, size_t size) {
   strftime(buffer, size, "%b %d %H:%M", tm_info);
 }
 
-static const char *stage_label_for_level(uint8_t stage_level) {
+static const char *milestone_badge_label_for_level(uint8_t stage_level) {
   if (stage_level >= 3) {
-    return "24h+";
+    return "Deep Ketosis";
   }
   if (stage_level == 2) {
-    return "18h+";
+    return "Ketosis";
   }
   if (stage_level == 1) {
-    return "12h+";
+    return "Fat Burn";
   }
-  return "--";
+  return NULL;
+}
+
+static void format_optional_tag_text(const char *prefix, const char *value, char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+
+  if (!value || value[0] == '\0') {
+    snprintf(buffer, size, "%s--", prefix ? prefix : "");
+    return;
+  }
+
+  snprintf(buffer, size, "%s%s", prefix ? prefix : "", value);
+}
+
+static const char *history_entry_badge_label(const FastEntry *entry) {
+  if (!entry) {
+    return NULL;
+  }
+  return milestone_badge_label_for_level(entry->max_stage_reached);
+}
+
+static int note_tag_index_for_entry(const FastEntry *entry) {
+  if (!entry || entry->note[0] == '\0') {
+    return 0;
+  }
+
+  for (int i = 1; i < (int)ARRAY_LENGTH(s_note_tags); i++) {
+    if (strncmp(entry->note, s_note_tags[i], sizeof(entry->note)) == 0) {
+      return i;
+    }
+  }
+
+  return 0;
+}
+
+static void set_entry_note_from_tag_index(FastEntry *entry, int tag_index) {
+  if (!entry) {
+    return;
+  }
+
+  if (tag_index <= 0 || tag_index >= (int)ARRAY_LENGTH(s_note_tags)) {
+    memset(entry->note, 0, sizeof(entry->note));
+    return;
+  }
+
+  snprintf(entry->note, sizeof(entry->note), "%s", s_note_tags[tag_index]);
 }
 
 static int history_index_for_row(int row) {
@@ -536,10 +597,21 @@ static void format_history_row(int row, char *title, size_t title_size, char *su
   const FastEntry *entry = &history[history_index];
   char date_text[24];
   char duration_text[20];
+  char badge_text[24];
+  char note_text[32];
+  const char *badge_label = history_entry_badge_label(entry);
   format_entry_datetime(entry->end_time, date_text, sizeof(date_text));
   format_duration_hours_minutes(entry_duration_seconds(entry), duration_text, sizeof(duration_text));
   snprintf(title, title_size, "%s", date_text);
-  snprintf(subtitle, subtitle_size, "%s | Max %s", duration_text, stage_label_for_level(entry->max_stage_reached));
+  note_text[0] = '\0';
+  if (entry->note[0] != '\0') {
+    snprintf(note_text, sizeof(note_text), " | %s", entry->note);
+  }
+  badge_text[0] = '\0';
+  if (badge_label) {
+    snprintf(badge_text, sizeof(badge_text), " | %s", badge_label);
+  }
+  snprintf(subtitle, subtitle_size, "%s%s%s", duration_text, badge_text, note_text);
 }
 
 static void refresh_stats_window_content(void) {
@@ -1244,7 +1316,7 @@ static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIn
     return;
   }
   char title[24];
-  char subtitle[40];
+  char subtitle[96];
   format_history_row(row, title, sizeof(title), subtitle, sizeof(subtitle));
   menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
 }
@@ -1268,9 +1340,12 @@ static void refresh_history_edit_window_content(void) {
   char start_text[24];
   char end_text[24];
   char duration_text[20];
+  char note_text[40];
+  const char *badge_label = milestone_badge_label_for_level(stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft)));
   format_entry_datetime(s_history_edit_draft.start_time, start_text, sizeof(start_text));
   format_entry_datetime(s_history_edit_draft.end_time, end_text, sizeof(end_text));
   format_duration_hours_minutes(entry_duration_seconds(&s_history_edit_draft), duration_text, sizeof(duration_text));
+  format_optional_tag_text("Note ", s_history_edit_draft.note, note_text, sizeof(note_text));
 
   snprintf(s_history_edit_title_text, sizeof(s_history_edit_title_text), "Edit %d/%d%s",
            s_history_edit_index + 1, history_count, s_history_edit_dirty ? "*" : "");
@@ -1278,10 +1353,11 @@ static void refresh_history_edit_window_content(void) {
            s_history_edit_field == EDIT_FIELD_START ? '>' : ' ', start_text);
   snprintf(s_history_edit_end_text, sizeof(s_history_edit_end_text), "%cEnd   %s",
            s_history_edit_field == EDIT_FIELD_END ? '>' : ' ', end_text);
-  snprintf(s_history_edit_duration_text, sizeof(s_history_edit_duration_text), "Dur %s", duration_text);
-  snprintf(s_history_edit_stage_text, sizeof(s_history_edit_stage_text), "Stage %s",
-           stage_text_for_elapsed(entry_duration_seconds(&s_history_edit_draft)));
-  snprintf(s_history_edit_hint_text, sizeof(s_history_edit_hint_text), "UP/DN 15m SEL field HOLD save");
+  snprintf(s_history_edit_duration_text, sizeof(s_history_edit_duration_text), "%c%s",
+           s_history_edit_field == EDIT_FIELD_NOTE ? '>' : ' ', note_text);
+  snprintf(s_history_edit_stage_text, sizeof(s_history_edit_stage_text), "Badge %s",
+           badge_label ? badge_label : "--");
+  snprintf(s_history_edit_hint_text, sizeof(s_history_edit_hint_text), "UP/DN adjust SEL field\nHOLD save");
 
   text_layer_set_text(s_history_edit_title_layer, s_history_edit_title_text);
   text_layer_set_text(s_history_edit_start_layer, s_history_edit_start_text);
@@ -1339,22 +1415,52 @@ static void history_adjust_edit_draft_by_minutes(int delta_minutes) {
   refresh_history_edit_window_content();
 }
 
+static void history_adjust_edit_note_by_delta(int delta) {
+  if (s_history_edit_index < 0 || s_history_edit_index >= history_count || delta == 0) {
+    return;
+  }
+
+  int tag_index = note_tag_index_for_entry(&s_history_edit_draft);
+  int tag_count = (int)ARRAY_LENGTH(s_note_tags);
+  tag_index = (tag_index + delta) % tag_count;
+  if (tag_index < 0) {
+    tag_index += tag_count;
+  }
+  set_entry_note_from_tag_index(&s_history_edit_draft, tag_index);
+  s_history_edit_dirty = true;
+  refresh_history_edit_window_content();
+}
+
 static void history_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+  if (s_history_edit_field == EDIT_FIELD_NOTE) {
+    history_adjust_edit_note_by_delta(1);
+    return;
+  }
   history_adjust_edit_draft_by_minutes(15);
 }
 
 static void history_edit_down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
+  if (s_history_edit_field == EDIT_FIELD_NOTE) {
+    history_adjust_edit_note_by_delta(-1);
+    return;
+  }
   history_adjust_edit_draft_by_minutes(-15);
 }
 
 static void history_edit_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  s_history_edit_field = s_history_edit_field == EDIT_FIELD_START ? EDIT_FIELD_END : EDIT_FIELD_START;
+  if (s_history_edit_field == EDIT_FIELD_START) {
+    s_history_edit_field = EDIT_FIELD_END;
+  } else if (s_history_edit_field == EDIT_FIELD_END) {
+    s_history_edit_field = EDIT_FIELD_NOTE;
+  } else {
+    s_history_edit_field = EDIT_FIELD_START;
+  }
   refresh_history_edit_window_content();
 }
 
