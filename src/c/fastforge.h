@@ -11,6 +11,12 @@ typedef struct {
   uint8_t max_stage_reached; // 0=none, 1=12h, 2=18h, 3=24h+
 } FastEntry;
 
+typedef struct {
+  uint16_t current_streak;
+  uint16_t longest_streak;
+  time_t last_completed_fast_end;
+} StreakData;
+
 #define MAX_FASTS 64
 #define DEFAULT_TARGET_MINUTES (16 * 60)
 
@@ -24,7 +30,11 @@ extern FastEntry history[MAX_FASTS];
 extern int history_count;
 extern FastEntry current_fast;
 extern uint16_t global_target_minutes;
+extern StreakData streak_data;
 extern AppTimer *alarm_timer;
 extern time_t target_time;
+
+void save_all_data(void);
+void load_all_data(void);
 
 #endif
