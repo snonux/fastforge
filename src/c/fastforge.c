@@ -141,7 +141,8 @@ static time_t s_last_streak_refresh_day = 0;
 typedef struct {
   bool active;
   int next_row;
-  int total_rows;
+  int snapshot_count;
+  FastEntry snapshot[MAX_FASTS];
 } HistoryExportState;
 
 static HistoryExportState s_history_export = {0};
@@ -598,7 +599,8 @@ static void format_history_csv_header(char *buffer, size_t size) {
 static void stop_history_export(void) {
   s_history_export.active = false;
   s_history_export.next_row = 0;
-  s_history_export.total_rows = 0;
+  s_history_export.snapshot_count = 0;
+  memset(s_history_export.snapshot, 0, sizeof(s_history_export.snapshot));
 }
 #endif
 
@@ -832,8 +834,8 @@ static void history_export_on_sent(DictionaryIterator *iterator, void *context) 
   }
 
   s_history_export.next_row++;
-  if (s_history_export.next_row >= s_history_export.total_rows) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "History export finished with %d rows", s_history_export.total_rows);
+  if (s_history_export.next_row >= s_history_export.snapshot_count + 1) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "History export finished with %d rows", s_history_export.snapshot_count + 1);
     stop_history_export();
     return;
   }
@@ -848,6 +850,16 @@ static void history_export_on_failed(DictionaryIterator *iterator, AppMessageRes
   stop_history_export();
 }
 
+static const char *history_export_status_for_row(void) {
+  if (s_history_export.next_row == 0) {
+    return s_history_export.snapshot_count == 0 ? "EXPORT_COMPLETE" : "EXPORT_STARTED";
+  }
+  if (s_history_export.next_row >= s_history_export.snapshot_count) {
+    return "EXPORT_COMPLETE";
+  }
+  return "EXPORT_ROW";
+}
+
 static void history_export_send_message(const char *row_text) {
   DictionaryIterator *outbox = NULL;
   AppMessageResult result = app_message_outbox_begin(&outbox);
@@ -858,8 +870,9 @@ static void history_export_send_message(const char *row_text) {
   }
 
   dict_write_int32(outbox, MESSAGE_KEY_EXPORT_SEQUENCE, s_history_export.next_row);
-  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_TOTAL, s_history_export.total_rows);
+  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_TOTAL, s_history_export.snapshot_count + 1);
   dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_ROW, row_text ? row_text : "");
+  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_STATUS, history_export_status_for_row());
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to queue history export message (%d)", result);
@@ -877,11 +890,11 @@ static void history_export_send_next(void) {
     format_history_csv_header(row_text, sizeof(row_text));
   } else {
     int history_index = s_history_export.next_row - 1;
-    if (history_index < 0 || history_index >= history_count) {
+    if (history_index < 0 || history_index >= s_history_export.snapshot_count) {
       stop_history_export();
       return;
     }
-    format_history_csv_row(&history[history_index], row_text, sizeof(row_text));
+    format_history_csv_row(&s_history_export.snapshot[history_index], row_text, sizeof(row_text));
   }
 
   history_export_send_message(row_text);
@@ -894,7 +907,10 @@ static bool history_export_begin(void) {
 
   s_history_export.active = true;
   s_history_export.next_row = 0;
-  s_history_export.total_rows = history_count + 1;
+  s_history_export.snapshot_count = history_count;
+  if (s_history_export.snapshot_count > 0) {
+    memcpy(s_history_export.snapshot, history, sizeof(FastEntry) * (size_t)s_history_export.snapshot_count);
+  }
   history_export_send_next();
   return true;
 }
