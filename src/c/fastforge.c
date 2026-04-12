@@ -78,7 +78,9 @@ static TextLayer *s_science_showdown_layer;
 static TextLayer *s_science_hint_layer;
 static TextLayer *s_settings_title_layer;
 static TextLayer *s_settings_target_layer;
+#ifdef DEBUG
 static TextLayer *s_settings_dev_layer;
+#endif
 static TextLayer *s_settings_hint_layer;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
@@ -108,7 +110,9 @@ static char s_science_timeline_text[192];
 static char s_science_showdown_text[160];
 static char s_science_hint_text[80];
 static char s_settings_target_text[32];
+#ifdef DEBUG
 static char s_settings_dev_text[32];
+#endif
 static char s_menu_stop_subtitle[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
@@ -128,6 +132,18 @@ static FastEntry s_history_edit_draft = {0};
 static EditField s_history_edit_field = EDIT_FIELD_START;
 static bool s_history_edit_dirty = false;
 static time_t s_last_streak_refresh_day = 0;
+
+#ifdef DEBUG
+static bool s_fake_time_enabled = false;
+static int32_t s_fake_time_offset_seconds = 0;
+static int32_t s_current_fast_origin_offset_seconds = 0;
+static Window *s_debug_window;
+static SimpleMenuLayer *s_debug_menu_layer;
+static SimpleMenuSection s_debug_menu_sections[1];
+static SimpleMenuItem s_debug_menu_items[6];
+static char s_debug_menu_clock_text[40];
+#endif
+
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
 static VibePattern s_alarm_pattern = {
   .durations = s_alarm_vibe,
@@ -142,10 +158,14 @@ static void history_menu_reload(void);
 static void refresh_running_edit_window_content(void);
 static void refresh_science_window_content(void);
 static void refresh_settings_window_content(void);
+static void refresh_all_ui_state(void);
 static void recompute_streak_data_from_history(void);
 static time_t entry_duration_seconds(const FastEntry *entry);
 static void recompute_streak_data_for_today(void);
 static bool refresh_streak_if_day_changed(void);
+#ifdef DEBUG
+static void show_debug_menu_window(void);
+#endif
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -234,6 +254,16 @@ static bool is_next_local_day(time_t first_day, time_t second_day) {
   return expected_next_day == second_day;
 }
 
+#ifdef DEBUG
+static time_t fastforge_now(void) {
+  return time(NULL) + (s_fake_time_enabled ? s_fake_time_offset_seconds : 0);
+}
+#else
+static time_t fastforge_now(void) {
+  return time(NULL);
+}
+#endif
+
 static void recompute_streak_data_from_history(void) {
   streak_data.current_streak = 0;
   streak_data.longest_streak = 0;
@@ -295,7 +325,7 @@ static void recompute_streak_data_from_history(void) {
     longest = 1;
   }
 
-  time_t today_day_start = local_day_start(time(NULL));
+  time_t today_day_start = local_day_start(fastforge_now());
   time_t last_completion_day = completion_days[completion_day_count - 1];
   if (last_completion_day == today_day_start ||
       is_next_local_day(last_completion_day, today_day_start)) {
@@ -308,11 +338,11 @@ static void recompute_streak_data_from_history(void) {
 
 static void recompute_streak_data_for_today(void) {
   recompute_streak_data_from_history();
-  s_last_streak_refresh_day = local_day_start(time(NULL));
+  s_last_streak_refresh_day = local_day_start(fastforge_now());
 }
 
 static bool refresh_streak_if_day_changed(void) {
-  time_t today_day_start = local_day_start(time(NULL));
+  time_t today_day_start = local_day_start(fastforge_now());
   if (today_day_start <= 0 || today_day_start == s_last_streak_refresh_day) {
     return false;
   }
@@ -329,6 +359,10 @@ void save_all_data(void) {
   persist_write_int(KEY_TARGET_MIN, global_target_minutes);
   persist_write_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
   persist_write_bool(KEY_DEV_MODE, developer_mode_enabled);
+#ifdef DEBUG
+  persist_write_int(KEY_DEBUG_FAKE_OFFSET, s_fake_time_offset_seconds);
+  persist_write_int(KEY_DEBUG_FAST_ORIGIN, s_current_fast_origin_offset_seconds);
+#endif
 }
 
 void load_all_data(void) {
@@ -338,6 +372,11 @@ void load_all_data(void) {
   global_target_minutes = DEFAULT_TARGET_MINUTES;
   developer_mode_enabled = false;
   memset(&streak_data, 0, sizeof(streak_data));
+#ifdef DEBUG
+  s_fake_time_enabled = false;
+  s_fake_time_offset_seconds = 0;
+  s_current_fast_origin_offset_seconds = 0;
+#endif
 
   if (persist_exists(KEY_HISTORY_COUNT)) {
     history_count = clamp_history_count(persist_read_int(KEY_HISTORY_COUNT));
@@ -371,6 +410,15 @@ void load_all_data(void) {
   if (persist_exists(KEY_DEV_MODE)) {
     developer_mode_enabled = persist_read_bool(KEY_DEV_MODE);
   }
+#ifdef DEBUG
+  if (persist_exists(KEY_DEBUG_FAKE_OFFSET)) {
+    s_fake_time_offset_seconds = persist_read_int(KEY_DEBUG_FAKE_OFFSET);
+    s_fake_time_enabled = s_fake_time_offset_seconds != 0;
+  }
+  if (persist_exists(KEY_DEBUG_FAST_ORIGIN)) {
+    s_current_fast_origin_offset_seconds = persist_read_int(KEY_DEBUG_FAST_ORIGIN);
+  }
+#endif
 
   normalize_loaded_data();
   recompute_streak_data_for_today();
@@ -641,7 +689,7 @@ static void schedule_alarm_if_needed(void) {
   }
 
   target_time = current_fast.start_time + (time_t)current_fast.target_minutes * 60;
-  time_t now = time(NULL);
+  time_t now = fastforge_now();
   if (target_time <= now) {
     alarm_callback(NULL);
     return;
@@ -656,11 +704,14 @@ bool fast_start(uint16_t preset_target_minutes) {
     return false;
   }
 
-  current_fast.start_time = time(NULL);
+  current_fast.start_time = fastforge_now();
   current_fast.end_time = 0;
   current_fast.target_minutes = resolve_target_minutes(preset_target_minutes);
   memset(current_fast.note, 0, sizeof(current_fast.note));
   current_fast.max_stage_reached = 0;
+#ifdef DEBUG
+  s_current_fast_origin_offset_seconds = s_fake_time_enabled ? s_fake_time_offset_seconds : 0;
+#endif
   save_all_data();
   schedule_alarm_if_needed();
   APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld target=%u",
@@ -674,7 +725,7 @@ bool fast_stop(void) {
   }
 
   FastEntry completed = current_fast;
-  completed.end_time = time(NULL);
+  completed.end_time = fastforge_now();
   if (completed.end_time < completed.start_time) {
     completed.end_time = completed.start_time;
   }
@@ -682,6 +733,9 @@ bool fast_stop(void) {
   sort_history_by_end_time();
   recompute_streak_data_for_today();
   memset(&current_fast, 0, sizeof(current_fast));
+#ifdef DEBUG
+  s_current_fast_origin_offset_seconds = 0;
+#endif
   if (alarm_timer) {
     app_timer_cancel(alarm_timer);
     alarm_timer = NULL;
@@ -715,6 +769,7 @@ static void show_placeholder_window(const char *title, const char *body, const c
   }
 }
 
+#ifdef DEBUG
 static void show_developer_info_window(void) {
   char message[160];
   snprintf(message, sizeof(message),
@@ -731,6 +786,15 @@ static void show_developer_info_window(void) {
            streak_data.current_streak,
            streak_data.longest_streak);
   show_placeholder_window("DEV INFO", message, "BACK Menu");
+}
+#endif
+
+static bool debug_controls_available(void) {
+#ifdef DEBUG
+  return developer_mode_enabled;
+#else
+  return false;
+#endif
 }
 
 static void set_science_content(void) {
@@ -772,17 +836,22 @@ static uint16_t clamp_default_target_minutes(int target_minutes) {
 }
 
 static void refresh_settings_window_content(void) {
-  if (!s_settings_target_layer || !s_settings_dev_layer || !s_settings_hint_layer) {
+  if (!s_settings_target_layer || !s_settings_hint_layer) {
     return;
   }
 
   snprintf(s_settings_target_text, sizeof(s_settings_target_text), "Default: %dh %02dm",
            global_target_minutes / 60, global_target_minutes % 60);
+#ifdef DEBUG
   snprintf(s_settings_dev_text, sizeof(s_settings_dev_text), "Dev Mode: %s",
            developer_mode_enabled ? "ON (timer dbg)" : "OFF");
   text_layer_set_text(s_settings_target_layer, s_settings_target_text);
   text_layer_set_text(s_settings_dev_layer, s_settings_dev_text);
   text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nSELECT Dev  BACK Save");
+#else
+  text_layer_set_text(s_settings_target_layer, s_settings_target_text);
+  text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nBACK Save");
+#endif
 }
 
 static void settings_persist_and_refresh(void) {
@@ -796,10 +865,152 @@ static void settings_adjust_target(int delta_minutes) {
   settings_persist_and_refresh();
 }
 
+#ifdef DEBUG
 static void settings_toggle_developer_mode(void) {
   developer_mode_enabled = !developer_mode_enabled;
   settings_persist_and_refresh();
 }
+#endif
+
+#ifdef DEBUG
+static void debug_refresh_menu(void) {
+  snprintf(s_debug_menu_clock_text, sizeof(s_debug_menu_clock_text), "Debug %+ldh %s",
+           (long)(s_fake_time_offset_seconds / 3600),
+           s_fake_time_enabled ? "fake" : "real");
+  s_debug_menu_items[0] = (SimpleMenuItem) {
+    .title = "+1 Hour",
+    .subtitle = "Advance debug clock",
+    .callback = NULL
+  };
+  s_debug_menu_items[1] = (SimpleMenuItem) {
+    .title = "+6 Hours",
+    .subtitle = "Jump to next stage",
+    .callback = NULL
+  };
+  s_debug_menu_items[2] = (SimpleMenuItem) {
+    .title = "+24 Hours",
+    .subtitle = "Cross whole-day boundary",
+    .callback = NULL
+  };
+  s_debug_menu_items[3] = (SimpleMenuItem) {
+    .title = "Use Real Clock",
+    .subtitle = "Clear fake-time offset",
+    .callback = NULL
+  };
+  s_debug_menu_items[4] = (SimpleMenuItem) {
+    .title = "Force Goal Alarm",
+    .subtitle = "Trigger goal-hit flow now",
+    .callback = NULL
+  };
+  s_debug_menu_items[5] = (SimpleMenuItem) {
+    .title = "Show Raw State",
+    .subtitle = "Open debug snapshot",
+    .callback = NULL
+  };
+  s_debug_menu_sections[0] = (SimpleMenuSection) {
+    .title = s_debug_menu_clock_text,
+    .num_items = ARRAY_LENGTH(s_debug_menu_items),
+    .items = s_debug_menu_items
+  };
+  if (s_debug_menu_layer) {
+    menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_debug_menu_layer));
+  }
+}
+
+static void debug_apply_time_offset_hours(int hours) {
+  s_fake_time_enabled = true;
+  s_fake_time_offset_seconds += hours * 3600;
+  save_all_data();
+  recompute_streak_data_for_today();
+  schedule_alarm_if_needed();
+  refresh_all_ui_state();
+  debug_refresh_menu();
+}
+
+static void debug_force_goal_alarm(void) {
+  if (!fast_is_running()) {
+    show_placeholder_window("DEBUG", "Start a fast before forcing the goal alarm.", "BACK Menu");
+    return;
+  }
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+  alarm_callback(NULL);
+  debug_refresh_menu();
+}
+
+static void debug_reset_fake_time(void) {
+  if (fast_is_running() && s_current_fast_origin_offset_seconds != 0) {
+    current_fast.start_time -= s_current_fast_origin_offset_seconds;
+    if (current_fast.start_time <= 0) {
+      current_fast.start_time = 1;
+    }
+  }
+  s_fake_time_enabled = false;
+  s_fake_time_offset_seconds = 0;
+  s_current_fast_origin_offset_seconds = 0;
+  save_all_data();
+  recompute_streak_data_for_today();
+  schedule_alarm_if_needed();
+  refresh_all_ui_state();
+  debug_refresh_menu();
+}
+
+static void debug_menu_select_callback(int index, void *context) {
+  (void)context;
+  switch (index) {
+    case 0:
+      debug_apply_time_offset_hours(1);
+      break;
+    case 1:
+      debug_apply_time_offset_hours(6);
+      break;
+    case 2:
+      debug_apply_time_offset_hours(24);
+      break;
+    case 3:
+      debug_reset_fake_time();
+      break;
+    case 4:
+      debug_force_goal_alarm();
+      break;
+    case 5:
+      show_developer_info_window();
+      break;
+  }
+}
+
+static void debug_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  for (size_t i = 0; i < ARRAY_LENGTH(s_debug_menu_items); i++) {
+    s_debug_menu_items[i].callback = debug_menu_select_callback;
+  }
+  debug_refresh_menu();
+  s_debug_menu_layer = simple_menu_layer_create(bounds, window, s_debug_menu_sections, 1, NULL);
+  layer_add_child(window_layer, simple_menu_layer_get_layer(s_debug_menu_layer));
+}
+
+static void debug_window_unload(Window *window) {
+  (void)window;
+  simple_menu_layer_destroy(s_debug_menu_layer);
+  s_debug_menu_layer = NULL;
+}
+
+static void debug_window_appear(Window *window) {
+  (void)window;
+  debug_refresh_menu();
+}
+
+static void show_debug_menu_window(void) {
+  if (!debug_controls_available()) {
+    return;
+  }
+  debug_refresh_menu();
+  safe_push_window(s_debug_window, true);
+}
+#endif
 
 static int progress_width_for_elapsed(time_t elapsed_seconds, uint32_t total_seconds, int width) {
   if (width <= 0 || total_seconds == 0 || elapsed_seconds <= 0) {
@@ -830,7 +1041,7 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
     return;
   }
 
-  time_t elapsed = time(NULL) - current_fast.start_time;
+  time_t elapsed = fastforge_now() - current_fast.start_time;
   if (elapsed < 0) {
     elapsed = 0;
   }
@@ -867,10 +1078,10 @@ static void refresh_timer_view(void) {
     format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
              global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
-    snprintf(s_stage_text, sizeof(s_stage_text), developer_mode_enabled ? "Stage: -- [DEV]" : "Stage: --");
-    text_layer_set_text(s_hint_layer, developer_mode_enabled ? "SELECT Start  DOWN Menu\nHOLD DOWN Debug" : "SELECT Start  DOWN/BACK Menu");
+    snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: -- [DEV]" : "Stage: --");
+    text_layer_set_text(s_hint_layer, debug_controls_available() ? "SELECT Start  DOWN Menu\nHOLD DOWN Debug" : "SELECT Start  DOWN/BACK Menu");
   } else {
-    time_t elapsed = time(NULL) - current_fast.start_time;
+    time_t elapsed = fastforge_now() - current_fast.start_time;
     if (elapsed < 0) {
       elapsed = 0;
     }
@@ -895,9 +1106,9 @@ static void refresh_timer_view(void) {
       snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
                streak_data.current_streak, streak_data.longest_streak);
     }
-    snprintf(s_stage_text, sizeof(s_stage_text), developer_mode_enabled ? "Stage: %s [DEV]" : "Stage: %s",
+    snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: %s [DEV]" : "Stage: %s",
              stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, developer_mode_enabled ? "UP Edit  SELECT Stop\nDOWN Menu  HOLD Debug" : "UP Edit  SELECT Stop  DOWN/BACK Menu");
+    text_layer_set_text(s_hint_layer, debug_controls_available() ? "UP Edit  SELECT Stop\nDOWN Menu  HOLD Debug" : "UP Edit  SELECT Stop  DOWN/BACK Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
@@ -916,7 +1127,7 @@ static void refresh_goal_window_content(void) {
 
   time_t elapsed = 0;
   if (fast_is_running()) {
-    elapsed = time(NULL) - current_fast.start_time;
+    elapsed = fastforge_now() - current_fast.start_time;
     if (elapsed < 0) {
       elapsed = 0;
     }
@@ -1185,7 +1396,7 @@ static void running_fast_edit_apply_delta_minutes(int delta_minutes) {
     return;
   }
 
-  time_t now = time(NULL);
+  time_t now = fastforge_now();
   time_t updated_start = current_fast.start_time + (time_t)delta_minutes * 60;
   if (updated_start > now) {
     updated_start = now;
@@ -1227,7 +1438,7 @@ static void refresh_running_edit_window_content(void) {
     return;
   }
 
-  time_t now = time(NULL);
+  time_t now = fastforge_now();
   char start_text[24];
   format_entry_datetime(current_fast.start_time, start_text, sizeof(start_text));
 
@@ -1422,21 +1633,22 @@ static void timer_down_click_handler(ClickRecognizerRef recognizer, void *contex
   window_stack_remove(s_timer_window, true);
 }
 
+ #ifdef DEBUG
 static void timer_debug_long_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  if (!developer_mode_enabled) {
-    return;
-  }
-  show_developer_info_window();
+  show_debug_menu_window();
 }
+#endif
 
 static void timer_click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_UP, timer_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, timer_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, timer_down_click_handler);
+#ifdef DEBUG
   window_long_click_subscribe(BUTTON_ID_DOWN, 500, timer_debug_long_click_handler, NULL);
+#endif
 }
 
 static void goal_window_stop_handler(ClickRecognizerRef recognizer, void *context) {
@@ -1506,11 +1718,13 @@ static void settings_down_click_handler(ClickRecognizerRef recognizer, void *con
   settings_adjust_target(-30);
 }
 
+#ifdef DEBUG
 static void settings_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   settings_toggle_developer_mode();
 }
+#endif
 
 static void settings_back_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
@@ -1522,7 +1736,9 @@ static void settings_click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_UP, settings_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, settings_down_click_handler);
+#ifdef DEBUG
   window_single_click_subscribe(BUTTON_ID_SELECT, settings_select_click_handler);
+#endif
   window_single_click_subscribe(BUTTON_ID_BACK, settings_back_click_handler);
 }
 
@@ -1978,22 +2194,26 @@ static void settings_window_load(Window *window) {
   text_layer_set_text_alignment(s_settings_target_layer, GTextAlignmentCenter);
   text_layer_set_font(s_settings_target_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
 
-  s_settings_dev_layer = text_layer_create(GRect(6, 78, bounds.size.w - 12, 24));
-  text_layer_set_background_color(s_settings_dev_layer, GColorClear);
-  text_layer_set_text_color(s_settings_dev_layer, GColorBlack);
-  text_layer_set_text_alignment(s_settings_dev_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_settings_hint_layer = text_layer_create(GRect(6, 118, bounds.size.w - 12, 42));
+  s_settings_hint_layer = text_layer_create(GRect(6, 92, bounds.size.w - 12, 42));
   text_layer_set_background_color(s_settings_hint_layer, GColorClear);
   text_layer_set_text_color(s_settings_hint_layer, GColorBlack);
   text_layer_set_text_alignment(s_settings_hint_layer, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_settings_hint_layer, GTextOverflowModeWordWrap);
   text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
 
+#ifdef DEBUG
+  s_settings_dev_layer = text_layer_create(GRect(6, 78, bounds.size.w - 12, 24));
+  text_layer_set_background_color(s_settings_dev_layer, GColorClear);
+  text_layer_set_text_color(s_settings_dev_layer, GColorBlack);
+  text_layer_set_text_alignment(s_settings_dev_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+#endif
+
   layer_add_child(window_layer, text_layer_get_layer(s_settings_title_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_settings_target_layer));
+#ifdef DEBUG
   layer_add_child(window_layer, text_layer_get_layer(s_settings_dev_layer));
+#endif
   layer_add_child(window_layer, text_layer_get_layer(s_settings_hint_layer));
   refresh_settings_window_content();
 }
@@ -2004,8 +2224,10 @@ static void settings_window_unload(Window *window) {
   s_settings_title_layer = NULL;
   text_layer_destroy(s_settings_target_layer);
   s_settings_target_layer = NULL;
+#ifdef DEBUG
   text_layer_destroy(s_settings_dev_layer);
   s_settings_dev_layer = NULL;
+#endif
   text_layer_destroy(s_settings_hint_layer);
   s_settings_hint_layer = NULL;
 }
@@ -2221,6 +2443,15 @@ static void init_windows(void) {
     .unload = settings_window_unload
   });
 
+#ifdef DEBUG
+  s_debug_window = window_create();
+  window_set_window_handlers(s_debug_window, (WindowHandlers) {
+    .load = debug_window_load,
+    .appear = debug_window_appear,
+    .unload = debug_window_unload
+  });
+#endif
+
   s_detail_window = window_create();
   window_set_click_config_provider(s_detail_window, placeholder_click_config_provider);
   window_set_window_handlers(s_detail_window, (WindowHandlers) {
@@ -2231,6 +2462,9 @@ static void init_windows(void) {
 
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
+#ifdef DEBUG
+  window_destroy(s_debug_window);
+#endif
   window_destroy(s_settings_window);
   window_destroy(s_science_window);
   window_destroy(s_stats_window);

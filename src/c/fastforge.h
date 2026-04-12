@@ -26,6 +26,8 @@ typedef struct {
 #define KEY_TARGET_MIN 4
 #define KEY_STREAK_DATA 5
 #define KEY_DEV_MODE 6
+#define KEY_DEBUG_FAKE_OFFSET 7
+#define KEY_DEBUG_FAST_ORIGIN 8
 
 extern FastEntry history[MAX_FASTS];
 extern int history_count;

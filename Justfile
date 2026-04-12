@@ -67,6 +67,14 @@ rebuild:
 quick:
     just build && just install
 
+# Build with DEBUG=1 compile flag
+debug-build:
+    DEBUG=1 pebble build
+
+# Build + install debug app
+debug-dev:
+    DEBUG=1 pebble build && pebble install --emulator {{emulator}}
+
 # ─────────────────────────────────────────────
 # Debug / Testing helpers
 # ─────────────────────────────────────────────
