@@ -10,8 +10,15 @@ AppTimer *alarm_timer = NULL;
 time_t target_time = 0;
 
 static Window *s_main_window;
-static TextLayer *s_text_layer;
-static char s_status_text[96];
+static TextLayer *s_title_layer;
+static TextLayer *s_timer_layer;
+static TextLayer *s_detail_layer;
+static TextLayer *s_stage_layer;
+static TextLayer *s_hint_layer;
+static char s_title_text[24];
+static char s_timer_text[16];
+static char s_detail_text[48];
+static char s_stage_text[24];
 
 bool fast_is_running(void) {
   return current_fast.start_time != 0;
@@ -89,19 +96,93 @@ void load_all_data(void) {
   normalize_loaded_data();
 }
 
-static void refresh_status_text(void) {
-  if (!fast_is_running()) {
-    snprintf(s_status_text, sizeof(s_status_text), "No active fast\nTarget: %u min\nSELECT: Start\nDOWN: Quit",
-             global_target_minutes);
-  } else {
-    const time_t elapsed = time(NULL) - current_fast.start_time;
-    const int elapsed_hours = (int)(elapsed / 3600);
-    const int elapsed_minutes = (int)((elapsed % 3600) / 60);
-    snprintf(s_status_text, sizeof(s_status_text),
-             "Fast running (%u min)\n%02dh %02dm elapsed\nSELECT: Stop\nDOWN: Quit",
-             current_fast.target_minutes, elapsed_hours, elapsed_minutes);
+static void format_hhmmss(time_t seconds, char *buffer, size_t size) {
+  if (seconds < 0) {
+    seconds = 0;
   }
-  text_layer_set_text(s_text_layer, s_status_text);
+  int hours = (int)(seconds / 3600);
+  int minutes = (int)((seconds % 3600) / 60);
+  int secs = (int)(seconds % 60);
+  snprintf(buffer, size, "%02d:%02d:%02d", hours, minutes, secs);
+}
+
+static uint8_t stage_level_for_elapsed(time_t elapsed_seconds) {
+  if (elapsed_seconds >= 24 * 3600) {
+    return 3;
+  }
+  if (elapsed_seconds >= 18 * 3600) {
+    return 2;
+  }
+  if (elapsed_seconds >= 12 * 3600) {
+    return 1;
+  }
+  return 0;
+}
+
+static const char *stage_text_for_elapsed(time_t elapsed_seconds) {
+  if (elapsed_seconds >= 18 * 3600) {
+    return "Stage: KETOSIS";
+  }
+  if (elapsed_seconds >= 12 * 3600) {
+    return "Stage: FAT BURN";
+  }
+  return "Stage: GLYCOGEN";
+}
+
+static void update_max_stage_if_needed(time_t elapsed_seconds) {
+  if (!fast_is_running()) {
+    return;
+  }
+
+  uint8_t stage_level = stage_level_for_elapsed(elapsed_seconds);
+  if (stage_level > current_fast.max_stage_reached) {
+    current_fast.max_stage_reached = stage_level;
+    save_all_data();
+  }
+}
+
+static void refresh_timer_view(void) {
+  if (!fast_is_running()) {
+    snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
+    format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+    snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um", global_target_minutes);
+    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
+    text_layer_set_text(s_hint_layer, "SELECT Start  DOWN Quit");
+  } else {
+    time_t now = time(NULL);
+    time_t elapsed = now - current_fast.start_time;
+    if (elapsed < 0) {
+      elapsed = 0;
+    }
+
+    update_max_stage_if_needed(elapsed);
+    uint32_t target_seconds = current_fast.target_minutes * 60;
+    if (target_seconds > 0) {
+      time_t remaining = (time_t)target_seconds - elapsed;
+      if (remaining > 0) {
+        snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
+        format_hhmmss(remaining, s_timer_text, sizeof(s_timer_text));
+      } else {
+        snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
+        format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+      }
+      char elapsed_text[16];
+      format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
+      snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s", elapsed_text);
+    } else {
+      snprintf(s_title_text, sizeof(s_title_text), "ELAPSED");
+      format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
+      snprintf(s_detail_text, sizeof(s_detail_text), "No target set");
+    }
+
+    snprintf(s_stage_text, sizeof(s_stage_text), "%s", stage_text_for_elapsed(elapsed));
+    text_layer_set_text(s_hint_layer, "SELECT Stop   DOWN Quit");
+  }
+
+  text_layer_set_text(s_title_layer, s_title_text);
+  text_layer_set_text(s_timer_layer, s_timer_text);
+  text_layer_set_text(s_detail_layer, s_detail_text);
+  text_layer_set_text(s_stage_layer, s_stage_text);
 }
 
 static void append_history_entry(const FastEntry *entry) {
@@ -183,7 +264,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   } else {
     fast_start(0);
   }
-  refresh_status_text();
+  refresh_timer_view();
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -201,32 +282,72 @@ static void click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_DOWN,  down_click_handler);
 }
 
+static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
+  (void)tick_time;
+  (void)units_changed;
+  refresh_timer_view();
+}
+
 // ==================== WINDOW LOAD / UNLOAD ====================
 
 static void window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_text_layer = text_layer_create(GRect(0, 20, bounds.size.w, bounds.size.h - 40));
-  text_layer_set_background_color(s_text_layer, GColorClear);
-  text_layer_set_text_color(s_text_layer, GColorBlack);
-  text_layer_set_text_alignment(s_text_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
-  refresh_status_text();
+  s_title_layer = text_layer_create(GRect(0, 4, bounds.size.w, 24));
+  text_layer_set_background_color(s_title_layer, GColorClear);
+  text_layer_set_text_color(s_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
 
-  layer_add_child(window_layer, text_layer_get_layer(s_text_layer));
+  s_timer_layer = text_layer_create(GRect(0, 28, bounds.size.w, 42));
+  text_layer_set_background_color(s_timer_layer, GColorClear);
+  text_layer_set_text_color(s_timer_layer, GColorBlack);
+  text_layer_set_text_alignment(s_timer_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_timer_layer, fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
+
+  s_detail_layer = text_layer_create(GRect(0, 76, bounds.size.w, 24));
+  text_layer_set_background_color(s_detail_layer, GColorClear);
+  text_layer_set_text_color(s_detail_layer, GColorBlack);
+  text_layer_set_text_alignment(s_detail_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_detail_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+
+  s_stage_layer = text_layer_create(GRect(0, 102, bounds.size.w, 24));
+  text_layer_set_background_color(s_stage_layer, GColorClear);
+  text_layer_set_text_color(s_stage_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stage_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_hint_layer = text_layer_create(GRect(0, 136, bounds.size.w, 30));
+  text_layer_set_background_color(s_hint_layer, GColorClear);
+  text_layer_set_text_color(s_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+
+  layer_add_child(window_layer, text_layer_get_layer(s_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_timer_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_detail_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stage_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_hint_layer));
+
+  refresh_timer_view();
 }
 
 static void window_unload(Window *window) {
   (void)window;
   save_all_data();
-  text_layer_destroy(s_text_layer);
+  text_layer_destroy(s_title_layer);
+  text_layer_destroy(s_timer_layer);
+  text_layer_destroy(s_detail_layer);
+  text_layer_destroy(s_stage_layer);
+  text_layer_destroy(s_hint_layer);
 }
 
 // ==================== APP INIT / DEINIT ====================
 
 static void init(void) {
   load_all_data();
+  tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   s_main_window = window_create();
   window_set_click_config_provider(s_main_window, click_config_provider);
   window_set_window_handlers(s_main_window, (WindowHandlers) {
@@ -239,6 +360,7 @@ static void init(void) {
 
 static void deinit(void) {
   save_all_data();
+  tick_timer_service_unsubscribe();
   window_destroy(s_main_window);
 }
 
