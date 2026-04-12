@@ -2569,12 +2569,12 @@ static void settings_window_load(Window *window) {
   text_layer_set_text_alignment(s_settings_target_layer, GTextAlignmentCenter);
   text_layer_set_font(s_settings_target_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
 
-  s_settings_hint_layer = text_layer_create(GRect(6, 98, bounds.size.w - 12, 38));
+  s_settings_hint_layer = text_layer_create(GRect(6, 94, bounds.size.w - 12, 54));
   text_layer_set_background_color(s_settings_hint_layer, GColorClear);
   text_layer_set_text_color(s_settings_hint_layer, GColorBlack);
   text_layer_set_text_alignment(s_settings_hint_layer, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_settings_hint_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
 
 #ifdef DEBUG
   s_settings_dev_layer = text_layer_create(GRect(6, 76, bounds.size.w - 12, 18));
