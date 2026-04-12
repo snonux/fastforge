@@ -46,6 +46,7 @@ static Window *s_stats_window;
 static Window *s_detail_window;
 static Window *s_history_window;
 static Window *s_history_edit_window;
+static Window *s_running_edit_window;
 
 static SimpleMenuLayer *s_main_menu_layer;
 static SimpleMenuLayer *s_presets_menu_layer;
@@ -80,6 +81,11 @@ static TextLayer *s_history_edit_end_layer;
 static TextLayer *s_history_edit_duration_layer;
 static TextLayer *s_history_edit_stage_layer;
 static TextLayer *s_history_edit_hint_layer;
+static TextLayer *s_running_edit_title_layer;
+static TextLayer *s_running_edit_start_layer;
+static TextLayer *s_running_edit_elapsed_layer;
+static TextLayer *s_running_edit_goal_layer;
+static TextLayer *s_running_edit_hint_layer;
 
 static char s_title_text[24];
 static char s_timer_text[16];
@@ -100,6 +106,9 @@ static char s_history_edit_end_text[32];
 static char s_history_edit_duration_text[32];
 static char s_history_edit_stage_text[24];
 static char s_history_edit_hint_text[40];
+static char s_running_edit_start_text[32];
+static char s_running_edit_elapsed_text[32];
+static char s_running_edit_goal_text[32];
 static int s_history_edit_index = -1;
 static FastEntry s_history_edit_draft = {0};
 static EditField s_history_edit_field = EDIT_FIELD_START;
@@ -115,6 +124,7 @@ static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
 static void refresh_stats_window_content(void);
 static void history_menu_reload(void);
+static void refresh_running_edit_window_content(void);
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -616,7 +626,7 @@ static void refresh_timer_view(void) {
     format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um", global_target_minutes);
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-    text_layer_set_text(s_hint_layer, "SELECT Start  BACK Menu");
+    text_layer_set_text(s_hint_layer, "SELECT Start\nBACK/DOWN Menu");
   } else {
     time_t elapsed = time(NULL) - current_fast.start_time;
     if (elapsed < 0) {
@@ -642,7 +652,7 @@ static void refresh_timer_view(void) {
       snprintf(s_detail_text, sizeof(s_detail_text), "No target set");
     }
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, "SELECT Stop   BACK Menu");
+    text_layer_set_text(s_hint_layer, "UP Edit  SELECT Stop\nBACK/DOWN Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
@@ -906,6 +916,123 @@ static void history_edit_click_config_provider(void *context) {
   window_long_click_subscribe(BUTTON_ID_SELECT, 500, history_edit_save_click_handler, NULL);
 }
 
+static void running_fast_edit_apply_delta_minutes(int delta_minutes) {
+  if (!fast_is_running() || delta_minutes == 0) {
+    return;
+  }
+
+  time_t now = time(NULL);
+  time_t updated_start = current_fast.start_time + (time_t)delta_minutes * 60;
+  if (updated_start > now) {
+    updated_start = now;
+  }
+  if (updated_start <= 0) {
+    updated_start = 1;
+  }
+  if (updated_start == current_fast.start_time) {
+    return;
+  }
+
+  current_fast.start_time = updated_start;
+  time_t elapsed = now - current_fast.start_time;
+  if (elapsed < 0) {
+    elapsed = 0;
+  }
+  current_fast.max_stage_reached = stage_level_for_elapsed(elapsed);
+  save_all_data();
+  schedule_alarm_if_needed();
+  refresh_all_ui_state();
+  refresh_running_edit_window_content();
+}
+
+static void refresh_running_edit_window_content(void) {
+  if (!s_running_edit_title_layer || !s_running_edit_start_layer || !s_running_edit_elapsed_layer ||
+      !s_running_edit_goal_layer || !s_running_edit_hint_layer) {
+    return;
+  }
+
+  if (!fast_is_running()) {
+    text_layer_set_text(s_running_edit_title_layer, "EDIT RUNNING");
+    text_layer_set_text(s_running_edit_start_layer, "No fast running");
+    text_layer_set_text(s_running_edit_elapsed_layer, "");
+    text_layer_set_text(s_running_edit_goal_layer, "");
+    text_layer_set_text(s_running_edit_hint_layer, "BACK");
+    return;
+  }
+
+  time_t now = time(NULL);
+  char start_text[24];
+  format_entry_datetime(current_fast.start_time, start_text, sizeof(start_text));
+
+  time_t elapsed = now - current_fast.start_time;
+  if (elapsed < 0) {
+    elapsed = 0;
+  }
+  char elapsed_text[20];
+  format_duration_hours_minutes(elapsed, elapsed_text, sizeof(elapsed_text));
+
+  snprintf(s_running_edit_start_text, sizeof(s_running_edit_start_text), "Start %s", start_text);
+  snprintf(s_running_edit_elapsed_text, sizeof(s_running_edit_elapsed_text), "Elapsed %s", elapsed_text);
+  if (current_fast.target_minutes > 0) {
+    time_t remaining = (time_t)current_fast.target_minutes * 60 - elapsed;
+    if (remaining > 0) {
+      char remaining_text[16];
+      format_hhmmss(remaining, remaining_text, sizeof(remaining_text));
+      snprintf(s_running_edit_goal_text, sizeof(s_running_edit_goal_text), "Goal in %s", remaining_text);
+    } else {
+      snprintf(s_running_edit_goal_text, sizeof(s_running_edit_goal_text), "Goal already reached");
+    }
+  } else {
+    snprintf(s_running_edit_goal_text, sizeof(s_running_edit_goal_text), "No target configured");
+  }
+
+  text_layer_set_text(s_running_edit_title_layer, "EDIT RUNNING");
+  text_layer_set_text(s_running_edit_start_layer, s_running_edit_start_text);
+  text_layer_set_text(s_running_edit_elapsed_layer, s_running_edit_elapsed_text);
+  text_layer_set_text(s_running_edit_goal_layer, s_running_edit_goal_text);
+  text_layer_set_text(s_running_edit_hint_layer, "UP earlier  DOWN later\nSELECT/BACK done");
+}
+
+static void running_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  running_fast_edit_apply_delta_minutes(-15);
+}
+
+static void running_edit_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  running_fast_edit_apply_delta_minutes(15);
+}
+
+static void running_edit_up_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  running_fast_edit_apply_delta_minutes(-60);
+}
+
+static void running_edit_down_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  running_fast_edit_apply_delta_minutes(60);
+}
+
+static void running_edit_done_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_running_edit_window, true);
+}
+
+static void running_edit_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, running_edit_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, running_edit_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, running_edit_done_click_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, running_edit_done_click_handler);
+  window_long_click_subscribe(BUTTON_ID_UP, 500, running_edit_up_long_click_handler, NULL);
+  window_long_click_subscribe(BUTTON_ID_DOWN, 500, running_edit_down_long_click_handler, NULL);
+}
+
 static void menu_start_new_fast_callback(int index, void *context) {
   (void)index;
   (void)context;
@@ -1016,6 +1143,16 @@ static void timer_select_click_handler(ClickRecognizerRef recognizer, void *cont
   refresh_all_ui_state();
 }
 
+static void timer_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (!fast_is_running()) {
+    return;
+  }
+  safe_push_window(s_running_edit_window, true);
+  refresh_running_edit_window_content();
+}
+
 static void timer_down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
@@ -1024,6 +1161,7 @@ static void timer_down_click_handler(ClickRecognizerRef recognizer, void *contex
 
 static void timer_click_config_provider(void *context) {
   (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, timer_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, timer_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, timer_down_click_handler);
 }
@@ -1069,6 +1207,7 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   (void)tick_time;
   (void)units_changed;
   refresh_timer_view();
+  refresh_running_edit_window_content();
 }
 
 static void goal_background_update_proc(Layer *layer, GContext *ctx) {
@@ -1324,6 +1463,67 @@ static void history_edit_window_appear(Window *window) {
   refresh_history_edit_window_content();
 }
 
+static void running_edit_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_running_edit_title_layer = text_layer_create(GRect(4, 4, bounds.size.w - 8, 26));
+  text_layer_set_background_color(s_running_edit_title_layer, GColorClear);
+  text_layer_set_text_color(s_running_edit_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_running_edit_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_running_edit_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+
+  s_running_edit_start_layer = text_layer_create(GRect(6, 36, bounds.size.w - 12, 24));
+  text_layer_set_background_color(s_running_edit_start_layer, GColorClear);
+  text_layer_set_text_color(s_running_edit_start_layer, GColorBlack);
+  text_layer_set_text_alignment(s_running_edit_start_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_running_edit_start_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_running_edit_elapsed_layer = text_layer_create(GRect(6, 62, bounds.size.w - 12, 24));
+  text_layer_set_background_color(s_running_edit_elapsed_layer, GColorClear);
+  text_layer_set_text_color(s_running_edit_elapsed_layer, GColorBlack);
+  text_layer_set_text_alignment(s_running_edit_elapsed_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_running_edit_elapsed_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_running_edit_goal_layer = text_layer_create(GRect(6, 88, bounds.size.w - 12, 34));
+  text_layer_set_background_color(s_running_edit_goal_layer, GColorClear);
+  text_layer_set_text_color(s_running_edit_goal_layer, GColorBlack);
+  text_layer_set_text_alignment(s_running_edit_goal_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_running_edit_goal_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+
+  s_running_edit_hint_layer = text_layer_create(GRect(4, 124, bounds.size.w - 8, 40));
+  text_layer_set_background_color(s_running_edit_hint_layer, GColorClear);
+  text_layer_set_text_color(s_running_edit_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_running_edit_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_running_edit_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+
+  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_start_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_elapsed_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_goal_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_hint_layer));
+  refresh_running_edit_window_content();
+}
+
+static void running_edit_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_running_edit_title_layer);
+  s_running_edit_title_layer = NULL;
+  text_layer_destroy(s_running_edit_start_layer);
+  s_running_edit_start_layer = NULL;
+  text_layer_destroy(s_running_edit_elapsed_layer);
+  s_running_edit_elapsed_layer = NULL;
+  text_layer_destroy(s_running_edit_goal_layer);
+  s_running_edit_goal_layer = NULL;
+  text_layer_destroy(s_running_edit_hint_layer);
+  s_running_edit_hint_layer = NULL;
+}
+
+static void running_edit_window_appear(Window *window) {
+  (void)window;
+  refresh_running_edit_window_content();
+}
+
 static void stats_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -1544,6 +1744,14 @@ static void init_windows(void) {
     .unload = history_edit_window_unload
   });
 
+  s_running_edit_window = window_create();
+  window_set_click_config_provider(s_running_edit_window, running_edit_click_config_provider);
+  window_set_window_handlers(s_running_edit_window, (WindowHandlers) {
+    .load = running_edit_window_load,
+    .appear = running_edit_window_appear,
+    .unload = running_edit_window_unload
+  });
+
   s_stats_window = window_create();
   window_set_window_handlers(s_stats_window, (WindowHandlers) {
     .load = stats_window_load,
@@ -1562,6 +1770,7 @@ static void init_windows(void) {
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
   window_destroy(s_stats_window);
+  window_destroy(s_running_edit_window);
   window_destroy(s_history_edit_window);
   window_destroy(s_history_window);
   window_destroy(s_presets_window);
