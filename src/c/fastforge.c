@@ -441,6 +441,13 @@ static void update_max_stage_if_needed(time_t elapsed_seconds) {
   }
 }
 
+static bool running_fast_is_at_target(time_t now) {
+  if (!fast_is_running() || current_fast.target_minutes == 0) {
+    return false;
+  }
+  return now >= current_fast.start_time + (time_t)current_fast.target_minutes * 60;
+}
+
 static void append_history_entry(const FastEntry *entry) {
   if (!entry) {
     return;
@@ -941,6 +948,9 @@ static void running_fast_edit_apply_delta_minutes(int delta_minutes) {
   current_fast.max_stage_reached = stage_level_for_elapsed(elapsed);
   save_all_data();
   schedule_alarm_if_needed();
+  if (!running_fast_is_at_target(now) && window_stack_contains_window(s_goal_window)) {
+    window_stack_remove(s_goal_window, false);
+  }
   refresh_all_ui_state();
   refresh_running_edit_window_content();
 }
