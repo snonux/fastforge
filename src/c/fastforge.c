@@ -10,15 +10,67 @@ AppTimer *alarm_timer = NULL;
 time_t target_time = 0;
 
 static Window *s_main_window;
+static Window *s_goal_window;
 static TextLayer *s_title_layer;
 static TextLayer *s_timer_layer;
 static TextLayer *s_detail_layer;
 static TextLayer *s_stage_layer;
 static TextLayer *s_hint_layer;
+static TextLayer *s_goal_title_layer;
+static TextLayer *s_goal_time_layer;
+static TextLayer *s_goal_hint_layer;
 static char s_title_text[24];
 static char s_timer_text[16];
 static char s_detail_text[48];
 static char s_stage_text[24];
+static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
+static VibePattern s_alarm_pattern = {
+  .durations = s_alarm_vibe,
+  .num_segments = ARRAY_LENGTH(s_alarm_vibe),
+};
+
+static void refresh_timer_view(void);
+
+static void show_goal_reached_window(void) {
+  if (!s_goal_window) {
+    return;
+  }
+  if (!window_stack_contains_window(s_goal_window)) {
+    window_stack_push(s_goal_window, true);
+  }
+}
+
+static void alarm_callback(void *data) {
+  (void)data;
+  alarm_timer = NULL;
+  target_time = 0;
+  vibes_enqueue_custom_pattern(s_alarm_pattern);
+  light_enable_interaction();
+  show_goal_reached_window();
+  refresh_timer_view();
+}
+
+static void schedule_alarm_if_needed(void) {
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+
+  if (!fast_is_running() || current_fast.target_minutes == 0) {
+    target_time = 0;
+    return;
+  }
+
+  target_time = current_fast.start_time + (time_t)current_fast.target_minutes * 60;
+  time_t now = time(NULL);
+  if (target_time <= now) {
+    alarm_callback(NULL);
+    return;
+  }
+
+  uint32_t ms_until_alarm = (uint32_t)(target_time - now) * 1000;
+  alarm_timer = app_timer_register(ms_until_alarm, alarm_callback, NULL);
+}
 
 bool fast_is_running(void) {
   return current_fast.start_time != 0;
@@ -228,6 +280,7 @@ bool fast_start(uint16_t preset_target_minutes) {
   memset(current_fast.note, 0, sizeof(current_fast.note));
   current_fast.max_stage_reached = 0;
   save_all_data();
+  schedule_alarm_if_needed();
 
   APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld (target=%u)",
           (long)current_fast.start_time, current_fast.target_minutes);
@@ -247,6 +300,11 @@ bool fast_stop(void) {
   append_history_entry(&completed);
   mark_fast_completed(completed.end_time);
   memset(&current_fast, 0, sizeof(current_fast));
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+  target_time = 0;
   save_all_data();
 
   APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved to history (count=%d)", history_count);
@@ -275,11 +333,25 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   window_stack_pop_all(false);   // Cleanly quit the app
 }
 
+static void goal_window_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_goal_window, true);
+}
+
 // ==================== CLICK CONFIG ====================
 
 static void click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN,  down_click_handler);
+}
+
+static void goal_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, goal_window_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, goal_window_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, goal_window_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, goal_window_dismiss_handler);
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
@@ -343,6 +415,43 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_hint_layer);
 }
 
+static void goal_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_goal_title_layer = text_layer_create(GRect(0, 28, bounds.size.w, 42));
+  text_layer_set_background_color(s_goal_title_layer, GColorBlack);
+  text_layer_set_text_color(s_goal_title_layer, GColorWhite);
+  text_layer_set_text_alignment(s_goal_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_goal_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  text_layer_set_text(s_goal_title_layer, "Goal");
+
+  s_goal_time_layer = text_layer_create(GRect(0, 70, bounds.size.w, 44));
+  text_layer_set_background_color(s_goal_time_layer, GColorBlack);
+  text_layer_set_text_color(s_goal_time_layer, GColorWhite);
+  text_layer_set_text_alignment(s_goal_time_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_goal_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  text_layer_set_text(s_goal_time_layer, "Reached!");
+
+  s_goal_hint_layer = text_layer_create(GRect(0, 126, bounds.size.w, 28));
+  text_layer_set_background_color(s_goal_hint_layer, GColorBlack);
+  text_layer_set_text_color(s_goal_hint_layer, GColorWhite);
+  text_layer_set_text_alignment(s_goal_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_goal_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text(s_goal_hint_layer, "Any button");
+
+  layer_add_child(window_layer, text_layer_get_layer(s_goal_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_goal_time_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_goal_hint_layer));
+}
+
+static void goal_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_goal_title_layer);
+  text_layer_destroy(s_goal_time_layer);
+  text_layer_destroy(s_goal_hint_layer);
+}
+
 // ==================== APP INIT / DEINIT ====================
 
 static void init(void) {
@@ -356,11 +465,27 @@ static void init(void) {
   });
 
   window_stack_push(s_main_window, true);
+
+  s_goal_window = window_create();
+  window_set_background_color(s_goal_window, GColorBlack);
+  window_set_click_config_provider(s_goal_window, goal_click_config_provider);
+  window_set_window_handlers(s_goal_window, (WindowHandlers) {
+    .load = goal_window_load,
+    .unload = goal_window_unload,
+  });
+
+  schedule_alarm_if_needed();
 }
 
 static void deinit(void) {
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+  target_time = 0;
   save_all_data();
   tick_timer_service_unsubscribe();
+  window_destroy(s_goal_window);
   window_destroy(s_main_window);
 }
 
