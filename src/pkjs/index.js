@@ -3,18 +3,18 @@ var Keys = require('message_keys');
 var CSV_STORAGE_KEY = 'fastforge.backup.csv';
 var CSV_UPDATED_AT_KEY = 'fastforge.backup.csv.updated_at';
 
-function ensureArraySize(rows, total) {
-  if (!rows || rows.length !== total) {
-    return new Array(total);
-  }
-  return rows;
-}
-
 function storeCsv(rows) {
   var csv = rows.join('\n');
   localStorage.setItem(CSV_STORAGE_KEY, csv);
   localStorage.setItem(CSV_UPDATED_AT_KEY, new Date().toISOString());
   console.log('FastForge backup stored, bytes=' + csv.length);
+}
+
+function beginExportSession(total) {
+  return {
+    total: total,
+    rows: new Array(total)
+  };
 }
 
 function onAppMessage(event) {
@@ -35,13 +35,21 @@ function onAppMessage(event) {
     return;
   }
 
-  var rows = ensureArraySize(onAppMessage.rows, total);
-  rows[sequence] = row;
-  onAppMessage.rows = rows;
+  if (status === 'EXPORT_STARTED' || !onAppMessage.session || onAppMessage.session.total !== total || sequence === 0) {
+    onAppMessage.session = beginExportSession(total);
+  }
+
+  var session = onAppMessage.session;
+  if (!session || session.total !== total) {
+    console.log('FastForge export session mismatch: ' + JSON.stringify(payload));
+    return;
+  }
+
+  session.rows[sequence] = row;
 
   if (sequence + 1 === total) {
-    storeCsv(rows);
-    onAppMessage.rows = null;
+    storeCsv(session.rows);
+    onAppMessage.session = null;
   }
 }
 
