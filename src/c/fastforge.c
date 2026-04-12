@@ -34,6 +34,7 @@ FastEntry history[MAX_FASTS];
 int history_count = 0;
 FastEntry current_fast = {0};
 uint16_t global_target_minutes = DEFAULT_TARGET_MINUTES;
+bool developer_mode_enabled = false;
 StreakData streak_data = {0};
 AppTimer *alarm_timer = NULL;
 time_t target_time = 0;
@@ -43,6 +44,7 @@ static Window *s_timer_window;
 static Window *s_goal_window;
 static Window *s_presets_window;
 static Window *s_science_window;
+static Window *s_settings_window;
 static Window *s_stats_window;
 static Window *s_detail_window;
 static Window *s_history_window;
@@ -74,6 +76,10 @@ static TextLayer *s_science_title_layer;
 static TextLayer *s_science_timeline_layer;
 static TextLayer *s_science_showdown_layer;
 static TextLayer *s_science_hint_layer;
+static TextLayer *s_settings_title_layer;
+static TextLayer *s_settings_target_layer;
+static TextLayer *s_settings_dev_layer;
+static TextLayer *s_settings_hint_layer;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
@@ -101,6 +107,8 @@ static char s_goal_stage_text[24];
 static char s_science_timeline_text[192];
 static char s_science_showdown_text[160];
 static char s_science_hint_text[80];
+static char s_settings_target_text[32];
+static char s_settings_dev_text[32];
 static char s_menu_stop_subtitle[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
@@ -133,6 +141,7 @@ static void refresh_stats_window_content(void);
 static void history_menu_reload(void);
 static void refresh_running_edit_window_content(void);
 static void refresh_science_window_content(void);
+static void refresh_settings_window_content(void);
 static void recompute_streak_data_from_history(void);
 static time_t entry_duration_seconds(const FastEntry *entry);
 static void recompute_streak_data_for_today(void);
@@ -319,6 +328,7 @@ void save_all_data(void) {
   persist_write_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
   persist_write_int(KEY_TARGET_MIN, global_target_minutes);
   persist_write_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
+  persist_write_bool(KEY_DEV_MODE, developer_mode_enabled);
 }
 
 void load_all_data(void) {
@@ -326,6 +336,7 @@ void load_all_data(void) {
   memset(history, 0, sizeof(history));
   memset(&current_fast, 0, sizeof(current_fast));
   global_target_minutes = DEFAULT_TARGET_MINUTES;
+  developer_mode_enabled = false;
   memset(&streak_data, 0, sizeof(streak_data));
 
   if (persist_exists(KEY_HISTORY_COUNT)) {
@@ -356,6 +367,9 @@ void load_all_data(void) {
     if (read_size != (int)sizeof(StreakData)) {
       memset(&streak_data, 0, sizeof(streak_data));
     }
+  }
+  if (persist_exists(KEY_DEV_MODE)) {
+    developer_mode_enabled = persist_read_bool(KEY_DEV_MODE);
   }
 
   normalize_loaded_data();
@@ -605,7 +619,7 @@ static void append_history_entry(const FastEntry *entry) {
 
 static uint16_t resolve_target_minutes(uint16_t preset_target_minutes) {
   if (preset_target_minutes > 0) {
-    global_target_minutes = preset_target_minutes;
+    return preset_target_minutes;
   }
   if (global_target_minutes == 0) {
     global_target_minutes = DEFAULT_TARGET_MINUTES;
@@ -701,6 +715,24 @@ static void show_placeholder_window(const char *title, const char *body, const c
   }
 }
 
+static void show_developer_info_window(void) {
+  char message[160];
+  snprintf(message, sizeof(message),
+           "running=%d hist=%d\n"
+           "default=%u target=%u\n"
+           "start=%ld last=%ld\n"
+           "streak=%u/%u",
+           fast_is_running() ? 1 : 0,
+           history_count,
+           global_target_minutes,
+           current_fast.target_minutes,
+           (long)current_fast.start_time,
+           (long)streak_data.last_completed_fast_end,
+           streak_data.current_streak,
+           streak_data.longest_streak);
+  show_placeholder_window("DEV INFO", message, "BACK Menu");
+}
+
 static void set_science_content(void) {
   snprintf(s_science_timeline_text, sizeof(s_science_timeline_text),
            "0h Fed  4h insulin drop\n"
@@ -727,6 +759,46 @@ static void refresh_science_window_content(void) {
   if (s_science_hint_layer) {
     text_layer_set_text(s_science_hint_layer, s_science_hint_text);
   }
+}
+
+static uint16_t clamp_default_target_minutes(int target_minutes) {
+  if (target_minutes < 8 * 60) {
+    return 8 * 60;
+  }
+  if (target_minutes > 48 * 60) {
+    return 48 * 60;
+  }
+  return (uint16_t)target_minutes;
+}
+
+static void refresh_settings_window_content(void) {
+  if (!s_settings_target_layer || !s_settings_dev_layer || !s_settings_hint_layer) {
+    return;
+  }
+
+  snprintf(s_settings_target_text, sizeof(s_settings_target_text), "Default: %dh %02dm",
+           global_target_minutes / 60, global_target_minutes % 60);
+  snprintf(s_settings_dev_text, sizeof(s_settings_dev_text), "Dev Mode: %s",
+           developer_mode_enabled ? "ON (timer dbg)" : "OFF");
+  text_layer_set_text(s_settings_target_layer, s_settings_target_text);
+  text_layer_set_text(s_settings_dev_layer, s_settings_dev_text);
+  text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nSELECT Dev  BACK Save");
+}
+
+static void settings_persist_and_refresh(void) {
+  save_all_data();
+  refresh_timer_view();
+  refresh_settings_window_content();
+}
+
+static void settings_adjust_target(int delta_minutes) {
+  global_target_minutes = clamp_default_target_minutes((int)global_target_minutes + delta_minutes);
+  settings_persist_and_refresh();
+}
+
+static void settings_toggle_developer_mode(void) {
+  developer_mode_enabled = !developer_mode_enabled;
+  settings_persist_and_refresh();
 }
 
 static int progress_width_for_elapsed(time_t elapsed_seconds, uint32_t total_seconds, int width) {
@@ -795,8 +867,8 @@ static void refresh_timer_view(void) {
     format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
              global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
-    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-    text_layer_set_text(s_hint_layer, "SELECT Start  DOWN/BACK Menu");
+    snprintf(s_stage_text, sizeof(s_stage_text), developer_mode_enabled ? "Stage: -- [DEV]" : "Stage: --");
+    text_layer_set_text(s_hint_layer, developer_mode_enabled ? "SELECT Start  DOWN Menu\nHOLD DOWN Debug" : "SELECT Start  DOWN/BACK Menu");
   } else {
     time_t elapsed = time(NULL) - current_fast.start_time;
     if (elapsed < 0) {
@@ -823,8 +895,9 @@ static void refresh_timer_view(void) {
       snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
                streak_data.current_streak, streak_data.longest_streak);
     }
-    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, "UP Edit  SELECT Stop  DOWN/BACK Menu");
+    snprintf(s_stage_text, sizeof(s_stage_text), developer_mode_enabled ? "Stage: %s [DEV]" : "Stage: %s",
+             stage_text_for_elapsed(elapsed));
+    text_layer_set_text(s_hint_layer, developer_mode_enabled ? "UP Edit  SELECT Stop\nDOWN Menu  HOLD Debug" : "UP Edit  SELECT Stop  DOWN/BACK Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
@@ -1274,11 +1347,8 @@ static void menu_science_callback(int index, void *context) {
 static void menu_settings_callback(int index, void *context) {
   (void)index;
   (void)context;
-  char message[96];
-  snprintf(message, sizeof(message),
-           "Settings pending.\nDefault target is %u minutes.",
-           global_target_minutes);
-  show_placeholder_window("SETTINGS", message, "BACK Menu");
+  refresh_settings_window_content();
+  safe_push_window(s_settings_window, true);
 }
 
 static void menu_backup_callback(int index, void *context) {
@@ -1352,11 +1422,21 @@ static void timer_down_click_handler(ClickRecognizerRef recognizer, void *contex
   window_stack_remove(s_timer_window, true);
 }
 
+static void timer_debug_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (!developer_mode_enabled) {
+    return;
+  }
+  show_developer_info_window();
+}
+
 static void timer_click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_UP, timer_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, timer_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, timer_down_click_handler);
+  window_long_click_subscribe(BUTTON_ID_DOWN, 500, timer_debug_long_click_handler, NULL);
 }
 
 static void goal_window_stop_handler(ClickRecognizerRef recognizer, void *context) {
@@ -1412,6 +1492,38 @@ static void science_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_DOWN, science_down_click_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, science_back_click_handler);
   window_single_click_subscribe(BUTTON_ID_UP, science_back_click_handler);
+}
+
+static void settings_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  settings_adjust_target(30);
+}
+
+static void settings_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  settings_adjust_target(-30);
+}
+
+static void settings_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  settings_toggle_developer_mode();
+}
+
+static void settings_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_settings_window, true);
+}
+
+static void settings_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, settings_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, settings_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, settings_select_click_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, settings_back_click_handler);
 }
 
 static void placeholder_click_config_provider(void *context) {
@@ -1488,6 +1600,7 @@ static void timer_window_load(Window *window) {
   text_layer_set_background_color(s_hint_layer, GColorClear);
   text_layer_set_text_color(s_hint_layer, GColorBlack);
   text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
+  text_layer_set_overflow_mode(s_hint_layer, GTextOverflowModeWordWrap);
   text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
 
   layer_add_child(window_layer, text_layer_get_layer(s_title_layer));
@@ -1848,6 +1961,60 @@ static void science_window_appear(Window *window) {
   refresh_science_window_content();
 }
 
+static void settings_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_settings_title_layer = text_layer_create(GRect(0, 6, bounds.size.w, 26));
+  text_layer_set_background_color(s_settings_title_layer, GColorClear);
+  text_layer_set_text_color(s_settings_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_settings_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_settings_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text(s_settings_title_layer, "SETTINGS");
+
+  s_settings_target_layer = text_layer_create(GRect(6, 42, bounds.size.w - 12, 24));
+  text_layer_set_background_color(s_settings_target_layer, GColorClear);
+  text_layer_set_text_color(s_settings_target_layer, GColorBlack);
+  text_layer_set_text_alignment(s_settings_target_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_settings_target_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_settings_dev_layer = text_layer_create(GRect(6, 78, bounds.size.w - 12, 24));
+  text_layer_set_background_color(s_settings_dev_layer, GColorClear);
+  text_layer_set_text_color(s_settings_dev_layer, GColorBlack);
+  text_layer_set_text_alignment(s_settings_dev_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_settings_hint_layer = text_layer_create(GRect(6, 118, bounds.size.w - 12, 42));
+  text_layer_set_background_color(s_settings_hint_layer, GColorClear);
+  text_layer_set_text_color(s_settings_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_settings_hint_layer, GTextAlignmentCenter);
+  text_layer_set_overflow_mode(s_settings_hint_layer, GTextOverflowModeWordWrap);
+  text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+
+  layer_add_child(window_layer, text_layer_get_layer(s_settings_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_settings_target_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_settings_dev_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_settings_hint_layer));
+  refresh_settings_window_content();
+}
+
+static void settings_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_settings_title_layer);
+  s_settings_title_layer = NULL;
+  text_layer_destroy(s_settings_target_layer);
+  s_settings_target_layer = NULL;
+  text_layer_destroy(s_settings_dev_layer);
+  s_settings_dev_layer = NULL;
+  text_layer_destroy(s_settings_hint_layer);
+  s_settings_hint_layer = NULL;
+}
+
+static void settings_window_appear(Window *window) {
+  (void)window;
+  refresh_settings_window_content();
+}
+
 static void detail_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -2046,6 +2213,14 @@ static void init_windows(void) {
     .unload = science_window_unload
   });
 
+  s_settings_window = window_create();
+  window_set_click_config_provider(s_settings_window, settings_click_config_provider);
+  window_set_window_handlers(s_settings_window, (WindowHandlers) {
+    .load = settings_window_load,
+    .appear = settings_window_appear,
+    .unload = settings_window_unload
+  });
+
   s_detail_window = window_create();
   window_set_click_config_provider(s_detail_window, placeholder_click_config_provider);
   window_set_window_handlers(s_detail_window, (WindowHandlers) {
@@ -2056,6 +2231,7 @@ static void init_windows(void) {
 
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
+  window_destroy(s_settings_window);
   window_destroy(s_science_window);
   window_destroy(s_stats_window);
   window_destroy(s_running_edit_window);
