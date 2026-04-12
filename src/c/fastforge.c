@@ -18,11 +18,14 @@ static TextLayer *s_stage_layer;
 static TextLayer *s_hint_layer;
 static TextLayer *s_goal_title_layer;
 static TextLayer *s_goal_time_layer;
+static TextLayer *s_goal_stage_layer;
 static TextLayer *s_goal_hint_layer;
 static char s_title_text[24];
 static char s_timer_text[16];
 static char s_detail_text[48];
 static char s_stage_text[24];
+static char s_goal_time_text[24];
+static char s_goal_stage_text[24];
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
 static VibePattern s_alarm_pattern = {
   .durations = s_alarm_vibe,
@@ -30,11 +33,13 @@ static VibePattern s_alarm_pattern = {
 };
 
 static void refresh_timer_view(void);
+static void refresh_goal_window_content(void);
 
 static void show_goal_reached_window(void) {
   if (!s_goal_window) {
     return;
   }
+  refresh_goal_window_content();
   if (!window_stack_contains_window(s_goal_window)) {
     window_stack_push(s_goal_window, true);
   }
@@ -193,6 +198,29 @@ static void update_max_stage_if_needed(time_t elapsed_seconds) {
   }
 }
 
+static void refresh_goal_window_content(void) {
+  if (!s_goal_time_layer || !s_goal_stage_layer) {
+    return;
+  }
+
+  time_t elapsed = 0;
+  if (fast_is_running()) {
+    elapsed = time(NULL) - current_fast.start_time;
+    if (elapsed < 0) {
+      elapsed = 0;
+    }
+    update_max_stage_if_needed(elapsed);
+  }
+
+  char elapsed_text[16];
+  format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
+  snprintf(s_goal_time_text, sizeof(s_goal_time_text), "Elapsed %s", elapsed_text);
+  snprintf(s_goal_stage_text, sizeof(s_goal_stage_text), "%s", stage_text_for_elapsed(elapsed));
+
+  text_layer_set_text(s_goal_time_layer, s_goal_time_text);
+  text_layer_set_text(s_goal_stage_layer, s_goal_stage_text);
+}
+
 static void refresh_timer_view(void) {
   if (!fast_is_running()) {
     snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
@@ -333,10 +361,19 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   window_stack_pop_all(false);   // Cleanly quit the app
 }
 
-static void goal_window_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
+static void goal_window_stop_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  fast_stop();
+  window_stack_remove(s_goal_window, true);
+  refresh_timer_view();
+}
+
+static void goal_window_continue_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   window_stack_remove(s_goal_window, true);
+  refresh_timer_view();
 }
 
 // ==================== CLICK CONFIG ====================
@@ -348,10 +385,10 @@ static void click_config_provider(void *context) {
 
 static void goal_click_config_provider(void *context) {
   (void)context;
-  window_single_click_subscribe(BUTTON_ID_SELECT, goal_window_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_BACK, goal_window_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_UP, goal_window_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_DOWN, goal_window_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, goal_window_stop_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, goal_window_continue_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, goal_window_continue_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, goal_window_continue_handler);
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
@@ -419,36 +456,46 @@ static void goal_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_goal_title_layer = text_layer_create(GRect(0, 28, bounds.size.w, 42));
+  s_goal_title_layer = text_layer_create(GRect(0, 20, bounds.size.w, 30));
   text_layer_set_background_color(s_goal_title_layer, GColorBlack);
   text_layer_set_text_color(s_goal_title_layer, GColorWhite);
   text_layer_set_text_alignment(s_goal_title_layer, GTextAlignmentCenter);
   text_layer_set_font(s_goal_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
-  text_layer_set_text(s_goal_title_layer, "Goal");
+  text_layer_set_text(s_goal_title_layer, "GOAL HIT");
 
-  s_goal_time_layer = text_layer_create(GRect(0, 70, bounds.size.w, 44));
+  s_goal_time_layer = text_layer_create(GRect(0, 56, bounds.size.w, 26));
   text_layer_set_background_color(s_goal_time_layer, GColorBlack);
   text_layer_set_text_color(s_goal_time_layer, GColorWhite);
   text_layer_set_text_alignment(s_goal_time_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
-  text_layer_set_text(s_goal_time_layer, "Reached!");
+  text_layer_set_font(s_goal_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text(s_goal_time_layer, "Elapsed 00:00:00");
 
-  s_goal_hint_layer = text_layer_create(GRect(0, 126, bounds.size.w, 28));
+  s_goal_stage_layer = text_layer_create(GRect(0, 84, bounds.size.w, 24));
+  text_layer_set_background_color(s_goal_stage_layer, GColorBlack);
+  text_layer_set_text_color(s_goal_stage_layer, GColorWhite);
+  text_layer_set_text_alignment(s_goal_stage_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_goal_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text(s_goal_stage_layer, "Stage: --");
+
+  s_goal_hint_layer = text_layer_create(GRect(0, 120, bounds.size.w, 42));
   text_layer_set_background_color(s_goal_hint_layer, GColorBlack);
   text_layer_set_text_color(s_goal_hint_layer, GColorWhite);
   text_layer_set_text_alignment(s_goal_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-  text_layer_set_text(s_goal_hint_layer, "Any button");
+  text_layer_set_font(s_goal_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  text_layer_set_text(s_goal_hint_layer, "SELECT Stop\nDOWN Continue");
 
   layer_add_child(window_layer, text_layer_get_layer(s_goal_title_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_goal_time_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_goal_stage_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_goal_hint_layer));
+  refresh_goal_window_content();
 }
 
 static void goal_window_unload(Window *window) {
   (void)window;
   text_layer_destroy(s_goal_title_layer);
   text_layer_destroy(s_goal_time_layer);
+  text_layer_destroy(s_goal_stage_layer);
   text_layer_destroy(s_goal_hint_layer);
 }
 
