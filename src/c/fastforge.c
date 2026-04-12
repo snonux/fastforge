@@ -24,6 +24,11 @@ enum {
   PRESET_MENU_ITEM_COUNT = 6
 };
 
+typedef enum {
+  EDIT_FIELD_START = 0,
+  EDIT_FIELD_END = 1
+} EditField;
+
 FastEntry history[MAX_FASTS];
 int history_count = 0;
 FastEntry current_fast = {0};
@@ -38,9 +43,12 @@ static Window *s_goal_window;
 static Window *s_presets_window;
 static Window *s_stats_window;
 static Window *s_detail_window;
+static Window *s_history_window;
+static Window *s_history_edit_window;
 
 static SimpleMenuLayer *s_main_menu_layer;
 static SimpleMenuLayer *s_presets_menu_layer;
+static MenuLayer *s_history_menu_layer;
 static SimpleMenuSection s_main_menu_sections[1];
 static SimpleMenuSection s_presets_menu_sections[1];
 static SimpleMenuItem s_main_menu_items[MAIN_MENU_ITEM_COUNT];
@@ -65,6 +73,12 @@ static TextLayer *s_placeholder_hint_layer;
 static TextLayer *s_stats_title_layer;
 static TextLayer *s_stats_body_layer;
 static TextLayer *s_stats_hint_layer;
+static TextLayer *s_history_edit_title_layer;
+static TextLayer *s_history_edit_start_layer;
+static TextLayer *s_history_edit_end_layer;
+static TextLayer *s_history_edit_duration_layer;
+static TextLayer *s_history_edit_stage_layer;
+static TextLayer *s_history_edit_hint_layer;
 
 static char s_title_text[24];
 static char s_timer_text[16];
@@ -77,6 +91,18 @@ static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
 static char s_stats_body_text[160];
+static char s_history_row_titles[MAX_FASTS][24];
+static char s_history_row_subtitles[MAX_FASTS][40];
+static char s_history_edit_title_text[24];
+static char s_history_edit_start_text[32];
+static char s_history_edit_end_text[32];
+static char s_history_edit_duration_text[32];
+static char s_history_edit_stage_text[24];
+static char s_history_edit_hint_text[40];
+static int s_history_edit_index = -1;
+static FastEntry s_history_edit_draft = {0};
+static EditField s_history_edit_field = EDIT_FIELD_START;
+static bool s_history_edit_dirty = false;
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
 static VibePattern s_alarm_pattern = {
   .durations = s_alarm_vibe,
@@ -87,6 +113,7 @@ static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
 static void refresh_stats_window_content(void);
+static void history_menu_reload(void);
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -199,6 +226,87 @@ static time_t entry_duration_seconds(const FastEntry *entry) {
     return 0;
   }
   return entry->end_time - entry->start_time;
+}
+
+static void format_entry_datetime(time_t timestamp, char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+  if (timestamp <= 0) {
+    snprintf(buffer, size, "--");
+    return;
+  }
+
+  struct tm *tm_info = localtime(&timestamp);
+  if (!tm_info) {
+    snprintf(buffer, size, "--");
+    return;
+  }
+  strftime(buffer, size, "%b %d %H:%M", tm_info);
+}
+
+static const char *stage_label_for_level(uint8_t stage_level) {
+  if (stage_level >= 3) {
+    return "24h+";
+  }
+  if (stage_level == 2) {
+    return "18h+";
+  }
+  if (stage_level == 1) {
+    return "12h+";
+  }
+  return "--";
+}
+
+static int history_index_for_row(int row) {
+  if (row < 0 || row >= history_count) {
+    return -1;
+  }
+  return history_count - 1 - row;
+}
+
+static void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size) {
+  if (!title || !subtitle || title_size == 0 || subtitle_size == 0) {
+    return;
+  }
+  if (history_count == 0) {
+    snprintf(title, title_size, "No completed fasts");
+    snprintf(subtitle, subtitle_size, "Start + stop a fast first");
+    return;
+  }
+
+  int history_index = history_index_for_row(row);
+  if (history_index < 0) {
+    snprintf(title, title_size, "Unavailable");
+    subtitle[0] = '\0';
+    return;
+  }
+
+  const FastEntry *entry = &history[history_index];
+  char date_text[24];
+  char duration_text[20];
+  format_entry_datetime(entry->end_time, date_text, sizeof(date_text));
+  format_duration_hours_minutes(entry_duration_seconds(entry), duration_text, sizeof(duration_text));
+  snprintf(title, title_size, "%s", date_text);
+  snprintf(subtitle, subtitle_size, "%s | Max %s", duration_text, stage_label_for_level(entry->max_stage_reached));
+}
+
+static void refresh_history_row_cache(void) {
+  for (int i = 0; i < MAX_FASTS; i++) {
+    s_history_row_titles[i][0] = '\0';
+    s_history_row_subtitles[i][0] = '\0';
+  }
+
+  if (history_count == 0) {
+    format_history_row(0, s_history_row_titles[0], sizeof(s_history_row_titles[0]),
+                       s_history_row_subtitles[0], sizeof(s_history_row_subtitles[0]));
+    return;
+  }
+
+  for (int row = 0; row < history_count; row++) {
+    format_history_row(row, s_history_row_titles[row], sizeof(s_history_row_titles[row]),
+                       s_history_row_subtitles[row], sizeof(s_history_row_subtitles[row]));
+  }
 }
 
 static void refresh_stats_window_content(void) {
@@ -389,6 +497,7 @@ bool fast_stop(void) {
   }
   target_time = 0;
   save_all_data();
+  history_menu_reload();
   APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved history_count=%d", history_count);
   return true;
 }
@@ -591,6 +700,185 @@ static void start_fast_from_preset(uint16_t target_minutes, const char *label) {
   refresh_all_ui_state();
 }
 
+static uint16_t history_menu_get_num_sections(MenuLayer *menu_layer, void *data) {
+  (void)menu_layer;
+  (void)data;
+  return 1;
+}
+
+static uint16_t history_menu_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  (void)menu_layer;
+  (void)section_index;
+  (void)data;
+  return history_count > 0 ? history_count : 1;
+}
+
+static int16_t history_menu_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  (void)menu_layer;
+  (void)section_index;
+  (void)data;
+  return MENU_CELL_BASIC_HEADER_HEIGHT;
+}
+
+static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
+  (void)section_index;
+  (void)data;
+  static char header_text[24];
+  snprintf(header_text, sizeof(header_text), "History (%d)", history_count);
+  menu_cell_basic_header_draw(ctx, cell_layer, header_text);
+}
+
+static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
+  (void)data;
+  int row = cell_index->row;
+  if (row < 0 || row >= MAX_FASTS) {
+    menu_cell_basic_draw(ctx, cell_layer, "Unavailable", "", NULL);
+    return;
+  }
+  menu_cell_basic_draw(ctx, cell_layer, s_history_row_titles[row], s_history_row_subtitles[row], NULL);
+}
+
+static void refresh_history_edit_window_content(void) {
+  if (!s_history_edit_title_layer || !s_history_edit_start_layer || !s_history_edit_end_layer ||
+      !s_history_edit_duration_layer || !s_history_edit_stage_layer || !s_history_edit_hint_layer) {
+    return;
+  }
+
+  if (s_history_edit_index < 0 || s_history_edit_index >= history_count) {
+    text_layer_set_text(s_history_edit_title_layer, "EDIT FAST");
+    text_layer_set_text(s_history_edit_start_layer, "No entry selected");
+    text_layer_set_text(s_history_edit_end_layer, "");
+    text_layer_set_text(s_history_edit_duration_layer, "");
+    text_layer_set_text(s_history_edit_stage_layer, "");
+    text_layer_set_text(s_history_edit_hint_layer, "BACK");
+    return;
+  }
+
+  char start_text[24];
+  char end_text[24];
+  char duration_text[20];
+  format_entry_datetime(s_history_edit_draft.start_time, start_text, sizeof(start_text));
+  format_entry_datetime(s_history_edit_draft.end_time, end_text, sizeof(end_text));
+  format_duration_hours_minutes(entry_duration_seconds(&s_history_edit_draft), duration_text, sizeof(duration_text));
+
+  snprintf(s_history_edit_title_text, sizeof(s_history_edit_title_text), "Edit %d/%d%s",
+           s_history_edit_index + 1, history_count, s_history_edit_dirty ? "*" : "");
+  snprintf(s_history_edit_start_text, sizeof(s_history_edit_start_text), "%cStart %s",
+           s_history_edit_field == EDIT_FIELD_START ? '>' : ' ', start_text);
+  snprintf(s_history_edit_end_text, sizeof(s_history_edit_end_text), "%cEnd   %s",
+           s_history_edit_field == EDIT_FIELD_END ? '>' : ' ', end_text);
+  snprintf(s_history_edit_duration_text, sizeof(s_history_edit_duration_text), "Dur %s", duration_text);
+  snprintf(s_history_edit_stage_text, sizeof(s_history_edit_stage_text), "Stage %s",
+           stage_text_for_elapsed(entry_duration_seconds(&s_history_edit_draft)));
+  snprintf(s_history_edit_hint_text, sizeof(s_history_edit_hint_text), "UP/DN 15m SEL field HOLD save");
+
+  text_layer_set_text(s_history_edit_title_layer, s_history_edit_title_text);
+  text_layer_set_text(s_history_edit_start_layer, s_history_edit_start_text);
+  text_layer_set_text(s_history_edit_end_layer, s_history_edit_end_text);
+  text_layer_set_text(s_history_edit_duration_layer, s_history_edit_duration_text);
+  text_layer_set_text(s_history_edit_stage_layer, s_history_edit_stage_text);
+  text_layer_set_text(s_history_edit_hint_layer, s_history_edit_hint_text);
+}
+
+static void history_open_edit_for_row(int row) {
+  int history_index = history_index_for_row(row);
+  if (history_index < 0 || history_index >= history_count) {
+    return;
+  }
+  s_history_edit_index = history_index;
+  s_history_edit_draft = history[history_index];
+  s_history_edit_field = EDIT_FIELD_START;
+  s_history_edit_dirty = false;
+  safe_push_window(s_history_edit_window, true);
+  refresh_history_edit_window_content();
+}
+
+static void history_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  (void)menu_layer;
+  (void)data;
+  if (history_count == 0) {
+    return;
+  }
+  history_open_edit_for_row(cell_index->row);
+}
+
+static void history_menu_reload(void) {
+  refresh_history_row_cache();
+  if (s_history_menu_layer) {
+    menu_layer_reload_data(s_history_menu_layer);
+  }
+}
+
+static void history_adjust_edit_draft_by_minutes(int delta_minutes) {
+  if (s_history_edit_index < 0 || s_history_edit_index >= history_count) {
+    return;
+  }
+  time_t delta_seconds = (time_t)delta_minutes * 60;
+  if (s_history_edit_field == EDIT_FIELD_START) {
+    s_history_edit_draft.start_time += delta_seconds;
+    if (s_history_edit_draft.start_time > s_history_edit_draft.end_time) {
+      s_history_edit_draft.start_time = s_history_edit_draft.end_time;
+    }
+  } else {
+    s_history_edit_draft.end_time += delta_seconds;
+    if (s_history_edit_draft.end_time < s_history_edit_draft.start_time) {
+      s_history_edit_draft.end_time = s_history_edit_draft.start_time;
+    }
+  }
+  s_history_edit_dirty = true;
+  refresh_history_edit_window_content();
+}
+
+static void history_edit_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  history_adjust_edit_draft_by_minutes(15);
+}
+
+static void history_edit_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  history_adjust_edit_draft_by_minutes(-15);
+}
+
+static void history_edit_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  s_history_edit_field = s_history_edit_field == EDIT_FIELD_START ? EDIT_FIELD_END : EDIT_FIELD_START;
+  refresh_history_edit_window_content();
+}
+
+static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (s_history_edit_index < 0 || s_history_edit_index >= history_count) {
+    return;
+  }
+  s_history_edit_draft.max_stage_reached = stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft));
+  history[s_history_edit_index] = s_history_edit_draft;
+  save_all_data();
+  s_history_edit_dirty = false;
+  refresh_history_row_cache();
+  refresh_stats_window_content();
+  history_menu_reload();
+  window_stack_remove(s_history_edit_window, true);
+}
+
+static void history_edit_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_history_edit_window, true);
+}
+
+static void history_edit_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, history_edit_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, history_edit_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, history_edit_select_click_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, history_edit_back_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, history_edit_save_click_handler, NULL);
+}
+
 static void menu_start_new_fast_callback(int index, void *context) {
   (void)index;
   (void)context;
@@ -617,9 +905,8 @@ static void menu_stop_current_callback(int index, void *context) {
 static void menu_history_callback(int index, void *context) {
   (void)index;
   (void)context;
-  char message[80];
-  snprintf(message, sizeof(message), "History screen pending.\nSaved fasts: %d", history_count);
-  show_placeholder_window("HISTORY", message, "BACK Menu");
+  history_menu_reload();
+  safe_push_window(s_history_window, true);
 }
 
 static void menu_statistics_callback(int index, void *context) {
@@ -910,6 +1197,106 @@ static void presets_window_unload(Window *window) {
   s_presets_menu_layer = NULL;
 }
 
+static void history_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_history_menu_layer = menu_layer_create(bounds);
+  menu_layer_set_click_config_onto_window(s_history_menu_layer, window);
+  menu_layer_set_callbacks(s_history_menu_layer, NULL, (MenuLayerCallbacks) {
+    .get_num_sections = history_menu_get_num_sections,
+    .get_num_rows = history_menu_get_num_rows,
+    .get_header_height = history_menu_get_header_height,
+    .draw_header = history_menu_draw_header,
+    .draw_row = history_menu_draw_row,
+    .select_click = history_menu_select_callback
+  });
+
+  layer_add_child(window_layer, menu_layer_get_layer(s_history_menu_layer));
+  history_menu_reload();
+}
+
+static void history_window_unload(Window *window) {
+  (void)window;
+  menu_layer_destroy(s_history_menu_layer);
+  s_history_menu_layer = NULL;
+}
+
+static void history_window_appear(Window *window) {
+  (void)window;
+  history_menu_reload();
+}
+
+static void history_edit_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_history_edit_title_layer = text_layer_create(GRect(4, 4, bounds.size.w - 8, 24));
+  text_layer_set_background_color(s_history_edit_title_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_history_edit_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_history_edit_start_layer = text_layer_create(GRect(6, 30, bounds.size.w - 12, 22));
+  text_layer_set_background_color(s_history_edit_start_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_start_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_start_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_history_edit_start_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_history_edit_end_layer = text_layer_create(GRect(6, 54, bounds.size.w - 12, 22));
+  text_layer_set_background_color(s_history_edit_end_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_end_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_end_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_history_edit_end_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_history_edit_duration_layer = text_layer_create(GRect(6, 82, bounds.size.w - 12, 22));
+  text_layer_set_background_color(s_history_edit_duration_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_duration_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_duration_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_history_edit_duration_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_history_edit_stage_layer = text_layer_create(GRect(6, 106, bounds.size.w - 12, 22));
+  text_layer_set_background_color(s_history_edit_stage_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_stage_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_stage_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_history_edit_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_history_edit_hint_layer = text_layer_create(GRect(4, 130, bounds.size.w - 8, 34));
+  text_layer_set_background_color(s_history_edit_hint_layer, GColorClear);
+  text_layer_set_text_color(s_history_edit_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_history_edit_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_history_edit_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_start_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_end_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_duration_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_stage_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_hint_layer));
+  refresh_history_edit_window_content();
+}
+
+static void history_edit_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_history_edit_title_layer);
+  s_history_edit_title_layer = NULL;
+  text_layer_destroy(s_history_edit_start_layer);
+  s_history_edit_start_layer = NULL;
+  text_layer_destroy(s_history_edit_end_layer);
+  s_history_edit_end_layer = NULL;
+  text_layer_destroy(s_history_edit_duration_layer);
+  s_history_edit_duration_layer = NULL;
+  text_layer_destroy(s_history_edit_stage_layer);
+  s_history_edit_stage_layer = NULL;
+  text_layer_destroy(s_history_edit_hint_layer);
+  s_history_edit_hint_layer = NULL;
+}
+
+static void history_edit_window_appear(Window *window) {
+  (void)window;
+  refresh_history_edit_window_content();
+}
+
 static void stats_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -1115,6 +1502,21 @@ static void init_windows(void) {
     .unload = presets_window_unload
   });
 
+  s_history_window = window_create();
+  window_set_window_handlers(s_history_window, (WindowHandlers) {
+    .load = history_window_load,
+    .appear = history_window_appear,
+    .unload = history_window_unload
+  });
+
+  s_history_edit_window = window_create();
+  window_set_click_config_provider(s_history_edit_window, history_edit_click_config_provider);
+  window_set_window_handlers(s_history_edit_window, (WindowHandlers) {
+    .load = history_edit_window_load,
+    .appear = history_edit_window_appear,
+    .unload = history_edit_window_unload
+  });
+
   s_stats_window = window_create();
   window_set_window_handlers(s_stats_window, (WindowHandlers) {
     .load = stats_window_load,
@@ -1133,6 +1535,8 @@ static void init_windows(void) {
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
   window_destroy(s_stats_window);
+  window_destroy(s_history_edit_window);
+  window_destroy(s_history_window);
   window_destroy(s_presets_window);
   window_destroy(s_goal_window);
   window_destroy(s_timer_window);
@@ -1141,6 +1545,7 @@ static void destroy_windows(void) {
 
 static void init(void) {
   load_all_data();
+  refresh_history_row_cache();
   tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   configure_main_menu_items();
   configure_preset_items();
