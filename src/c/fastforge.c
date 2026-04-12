@@ -36,6 +36,7 @@ static Window *s_menu_window;
 static Window *s_timer_window;
 static Window *s_goal_window;
 static Window *s_presets_window;
+static Window *s_stats_window;
 static Window *s_detail_window;
 
 static SimpleMenuLayer *s_main_menu_layer;
@@ -61,6 +62,9 @@ static TextLayer *s_goal_hint_layer;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
+static TextLayer *s_stats_title_layer;
+static TextLayer *s_stats_body_layer;
+static TextLayer *s_stats_hint_layer;
 
 static char s_title_text[24];
 static char s_timer_text[16];
@@ -72,6 +76,7 @@ static char s_menu_stop_subtitle[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
+static char s_stats_body_text[160];
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
 static VibePattern s_alarm_pattern = {
   .durations = s_alarm_vibe,
@@ -81,6 +86,7 @@ static VibePattern s_alarm_pattern = {
 static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
+static void refresh_stats_window_content(void);
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -177,6 +183,80 @@ static void format_hhmmss(time_t seconds, char *buffer, size_t size) {
            (int)(seconds / 3600),
            (int)((seconds % 3600) / 60),
            (int)(seconds % 60));
+}
+
+static void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
+  if (seconds < 0) {
+    seconds = 0;
+  }
+  int hours = (int)(seconds / 3600);
+  int minutes = (int)((seconds % 3600) / 60);
+  snprintf(buffer, size, "%dh %02dm", hours, minutes);
+}
+
+static time_t entry_duration_seconds(const FastEntry *entry) {
+  if (!entry || entry->start_time == 0 || entry->end_time <= entry->start_time) {
+    return 0;
+  }
+  return entry->end_time - entry->start_time;
+}
+
+static void refresh_stats_window_content(void) {
+  if (!s_stats_body_layer) {
+    return;
+  }
+
+  time_t total_seconds = 0;
+  time_t longest_seconds = 0;
+  int completed_count = 0;
+  int successful_count = 0;
+
+  for (int i = 0; i < history_count; i++) {
+    const FastEntry *entry = &history[i];
+    time_t duration = entry_duration_seconds(entry);
+    if (duration <= 0) {
+      continue;
+    }
+
+    completed_count++;
+    total_seconds += duration;
+    if (duration > longest_seconds) {
+      longest_seconds = duration;
+    }
+    if (entry->target_minutes > 0 && duration >= (time_t)entry->target_minutes * 60) {
+      successful_count++;
+    }
+  }
+
+  if (completed_count == 0) {
+    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
+             "No completed fasts yet.\n"
+             "Start and stop your first\n"
+             "fast to populate stats.");
+  } else {
+    char avg_text[20];
+    char total_text[20];
+    char longest_text[20];
+    time_t average_seconds = total_seconds / completed_count;
+    int success_rate = (successful_count * 100 + completed_count / 2) / completed_count;
+
+    format_duration_hours_minutes(average_seconds, avg_text, sizeof(avg_text));
+    format_duration_hours_minutes(total_seconds, total_text, sizeof(total_text));
+    format_duration_hours_minutes(longest_seconds, longest_text, sizeof(longest_text));
+    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
+             "Avg fast: %s\n"
+             "Total fasted: %s\n"
+             "Success: %d%% (%d/%d)\n"
+             "Longest: %s",
+             avg_text,
+             total_text,
+             success_rate,
+             successful_count,
+             completed_count,
+             longest_text);
+  }
+
+  text_layer_set_text(s_stats_body_layer, s_stats_body_text);
 }
 
 static uint8_t stage_level_for_elapsed(time_t elapsed_seconds) {
@@ -545,11 +625,8 @@ static void menu_history_callback(int index, void *context) {
 static void menu_statistics_callback(int index, void *context) {
   (void)index;
   (void)context;
-  char message[100];
-  snprintf(message, sizeof(message),
-           "Stats screen pending.\nStreak: %u  Longest: %u",
-           streak_data.current_streak, streak_data.longest_streak);
-  show_placeholder_window("STATISTICS", message, "BACK Menu");
+  refresh_stats_window_content();
+  safe_push_window(s_stats_window, true);
 }
 
 static void menu_science_callback(int index, void *context) {
@@ -833,6 +910,51 @@ static void presets_window_unload(Window *window) {
   s_presets_menu_layer = NULL;
 }
 
+static void stats_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  s_stats_title_layer = text_layer_create(GRect(4, 8, bounds.size.w - 8, 26));
+  text_layer_set_background_color(s_stats_title_layer, GColorClear);
+  text_layer_set_text_color(s_stats_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_stats_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text(s_stats_title_layer, "STATISTICS");
+
+  s_stats_body_layer = text_layer_create(GRect(6, 40, bounds.size.w - 12, 98));
+  text_layer_set_background_color(s_stats_body_layer, GColorClear);
+  text_layer_set_text_color(s_stats_body_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_body_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_stats_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+
+  s_stats_hint_layer = text_layer_create(GRect(4, 140, bounds.size.w - 8, 24));
+  text_layer_set_background_color(s_stats_hint_layer, GColorClear);
+  text_layer_set_text_color(s_stats_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_stats_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  text_layer_set_text(s_stats_hint_layer, "BACK Menu");
+
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_body_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_hint_layer));
+  refresh_stats_window_content();
+}
+
+static void stats_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_stats_title_layer);
+  s_stats_title_layer = NULL;
+  text_layer_destroy(s_stats_body_layer);
+  s_stats_body_layer = NULL;
+  text_layer_destroy(s_stats_hint_layer);
+  s_stats_hint_layer = NULL;
+}
+
+static void stats_window_appear(Window *window) {
+  (void)window;
+  refresh_stats_window_content();
+}
+
 static void detail_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -899,7 +1021,7 @@ static void configure_main_menu_items(void) {
   };
   s_main_menu_items[MAIN_MENU_INDEX_STATS] = (SimpleMenuItem) {
     .title = "Statistics",
-    .subtitle = "Streak and totals",
+    .subtitle = "Dashboard metrics",
     .callback = menu_statistics_callback
   };
   s_main_menu_items[MAIN_MENU_INDEX_SCIENCE] = (SimpleMenuItem) {
@@ -993,6 +1115,13 @@ static void init_windows(void) {
     .unload = presets_window_unload
   });
 
+  s_stats_window = window_create();
+  window_set_window_handlers(s_stats_window, (WindowHandlers) {
+    .load = stats_window_load,
+    .appear = stats_window_appear,
+    .unload = stats_window_unload
+  });
+
   s_detail_window = window_create();
   window_set_click_config_provider(s_detail_window, placeholder_click_config_provider);
   window_set_window_handlers(s_detail_window, (WindowHandlers) {
@@ -1003,6 +1132,7 @@ static void init_windows(void) {
 
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
+  window_destroy(s_stats_window);
   window_destroy(s_presets_window);
   window_destroy(s_goal_window);
   window_destroy(s_timer_window);
