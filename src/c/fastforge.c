@@ -91,7 +91,6 @@ static char s_title_text[24];
 static char s_timer_text[16];
 static char s_detail_text[48];
 static char s_stage_text[32];
-static char s_hint_text[48];
 static char s_goal_time_text[24];
 static char s_goal_stage_text[24];
 static char s_menu_stop_subtitle[32];
@@ -99,8 +98,6 @@ static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
 static char s_stats_body_text[160];
-static char s_history_row_titles[MAX_FASTS][24];
-static char s_history_row_subtitles[MAX_FASTS][40];
 static char s_history_edit_title_text[24];
 static char s_history_edit_start_text[32];
 static char s_history_edit_end_text[32];
@@ -447,24 +444,6 @@ static void format_history_row(int row, char *title, size_t title_size, char *su
   snprintf(subtitle, subtitle_size, "%s | Max %s", duration_text, stage_label_for_level(entry->max_stage_reached));
 }
 
-static void refresh_history_row_cache(void) {
-  for (int i = 0; i < MAX_FASTS; i++) {
-    s_history_row_titles[i][0] = '\0';
-    s_history_row_subtitles[i][0] = '\0';
-  }
-
-  if (history_count == 0) {
-    format_history_row(0, s_history_row_titles[0], sizeof(s_history_row_titles[0]),
-                       s_history_row_subtitles[0], sizeof(s_history_row_subtitles[0]));
-    return;
-  }
-
-  for (int row = 0; row < history_count; row++) {
-    format_history_row(row, s_history_row_titles[row], sizeof(s_history_row_titles[row]),
-                       s_history_row_subtitles[row], sizeof(s_history_row_subtitles[row]));
-  }
-}
-
 static void refresh_stats_window_content(void) {
   if (!s_stats_body_layer) {
     return;
@@ -753,7 +732,7 @@ static void refresh_timer_view(void) {
     snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
              global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-    snprintf(s_hint_text, sizeof(s_hint_text), "SELECT Start  DOWN/BACK Menu");
+    text_layer_set_text(s_hint_layer, "SELECT Start  DOWN/BACK Menu");
   } else {
     time_t elapsed = time(NULL) - current_fast.start_time;
     if (elapsed < 0) {
@@ -781,14 +760,13 @@ static void refresh_timer_view(void) {
                streak_data.current_streak, streak_data.longest_streak);
     }
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
-    snprintf(s_hint_text, sizeof(s_hint_text), "UP Edit  SELECT Stop  DOWN/BACK Menu");
+    text_layer_set_text(s_hint_layer, "UP Edit  SELECT Stop  DOWN/BACK Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
   text_layer_set_text(s_timer_layer, s_timer_text);
   text_layer_set_text(s_detail_layer, s_detail_text);
   text_layer_set_text(s_stage_layer, s_stage_text);
-  text_layer_set_text(s_hint_layer, s_hint_text);
   if (s_progress_layer) {
     layer_mark_dirty(s_progress_layer);
   }
@@ -889,7 +867,7 @@ static int16_t history_menu_get_header_height(MenuLayer *menu_layer, uint16_t se
 static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
   (void)section_index;
   (void)data;
-  static char header_text[40];
+  char header_text[40];
   snprintf(header_text, sizeof(header_text), "History %d  S:%u/%u",
            history_count, streak_data.current_streak, streak_data.longest_streak);
   menu_cell_basic_header_draw(ctx, cell_layer, header_text);
@@ -902,7 +880,10 @@ static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIn
     menu_cell_basic_draw(ctx, cell_layer, "Unavailable", "", NULL);
     return;
   }
-  menu_cell_basic_draw(ctx, cell_layer, s_history_row_titles[row], s_history_row_subtitles[row], NULL);
+  char title[24];
+  char subtitle[40];
+  format_history_row(row, title, sizeof(title), subtitle, sizeof(subtitle));
+  menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
 }
 
 static void refresh_history_edit_window_content(void) {
@@ -970,7 +951,6 @@ static void history_menu_select_callback(MenuLayer *menu_layer, MenuIndex *cell_
 }
 
 static void history_menu_reload(void) {
-  refresh_history_row_cache();
   if (s_history_menu_layer) {
     menu_layer_reload_data(s_history_menu_layer);
   }
@@ -1027,7 +1007,6 @@ static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void 
   recompute_streak_data_from_history();
   save_all_data();
   s_history_edit_dirty = false;
-  refresh_history_row_cache();
   refresh_stats_window_content();
   history_menu_reload();
   window_stack_remove(s_history_edit_window, true);
@@ -1916,7 +1895,6 @@ static void destroy_windows(void) {
 
 static void init(void) {
   load_all_data();
-  refresh_history_row_cache();
   tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   configure_main_menu_items();
   configure_preset_items();
