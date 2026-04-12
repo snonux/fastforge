@@ -11,6 +11,7 @@ time_t target_time = 0;
 
 static Window *s_main_window;
 static Window *s_goal_window;
+static Layer *s_goal_background_layer;
 static TextLayer *s_title_layer;
 static TextLayer *s_timer_layer;
 static TextLayer *s_detail_layer;
@@ -34,6 +35,11 @@ static VibePattern s_alarm_pattern = {
 
 static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
+
+static void goal_background_update_proc(Layer *layer, GContext *ctx) {
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
+}
 
 static void show_goal_reached_window(void) {
   if (!s_goal_window) {
@@ -456,6 +462,10 @@ static void goal_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
+  s_goal_background_layer = layer_create(bounds);
+  layer_set_update_proc(s_goal_background_layer, goal_background_update_proc);
+  layer_add_child(window_layer, s_goal_background_layer);
+
   s_goal_title_layer = text_layer_create(GRect(0, 20, bounds.size.w, 30));
   text_layer_set_background_color(s_goal_title_layer, GColorBlack);
   text_layer_set_text_color(s_goal_title_layer, GColorWhite);
@@ -493,6 +503,7 @@ static void goal_window_load(Window *window) {
 
 static void goal_window_unload(Window *window) {
   (void)window;
+  layer_destroy(s_goal_background_layer);
   text_layer_destroy(s_goal_title_layer);
   text_layer_destroy(s_goal_time_layer);
   text_layer_destroy(s_goal_stage_layer);
