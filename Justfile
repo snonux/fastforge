@@ -3,6 +3,8 @@
 # Justfile for Fedora Linux + Pebble SDK 4.9+ (2026)
 # =============================================
 
+emulator := "basalt"
+
 # Default: show all available commands
 default:
     @just --list
@@ -26,19 +28,19 @@ build:
 
 # Install to the basalt emulator (this also starts the emulator if it's not running)
 install:
-    pebble install --emulator basalt
+    pebble install --emulator {{emulator}}
 
 # Build + Install (the command you will use most often)
 dev:
-    pebble build && pebble install --emulator basalt
+    pebble build && pebble install --emulator {{emulator}}
 
 # Show live logs (run this in a **second** terminal)
 logs:
-    pebble logs
+    pebble logs --emulator {{emulator}}
 
 # Take a screenshot of the emulator
 screenshot:
-    pebble screenshot
+    pebble screenshot --emulator {{emulator}}
 
 # ─────────────────────────────────────────────
 # Emulator control

@@ -6,7 +6,7 @@
   "private": true,
   "dependencies": {},
   "pebble": {
-    "displayName": "fastforge",
+    "displayName": "FastForge",
     "uuid": "dee8dfc5-60b2-4c77-9315-08d96d7e4e38",
     "sdkVersion": "3",
     "enableMultiJS": true,
