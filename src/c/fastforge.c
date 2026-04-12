@@ -16,13 +16,15 @@ enum {
 };
 
 enum {
-  PRESET_MENU_INDEX_DEFAULT = 0,
-  PRESET_MENU_INDEX_16H = 1,
-  PRESET_MENU_INDEX_18H = 2,
-  PRESET_MENU_INDEX_20H = 3,
-  PRESET_MENU_INDEX_24H = 4,
-  PRESET_MENU_INDEX_36H = 5,
-  PRESET_MENU_ITEM_COUNT = 6
+  PRESET_MENU_INDEX_16H = 0,
+  PRESET_MENU_INDEX_18H = 1,
+  PRESET_MENU_INDEX_20H = 2,
+  PRESET_MENU_INDEX_24H = 3,
+  PRESET_MENU_INDEX_26H = 4,
+  PRESET_MENU_INDEX_28H = 5,
+  PRESET_MENU_INDEX_30H = 6,
+  PRESET_MENU_INDEX_36H = 7,
+  PRESET_MENU_ITEM_COUNT = 8
 };
 
 typedef enum {
@@ -1248,8 +1250,15 @@ static void alarm_callback(void *data) {
   refresh_all_ui_state();
 }
 
-static void start_fast_from_preset(uint16_t target_minutes, const char *label) {
-  (void)label;
+static void start_fast_from_preset(uint16_t target_minutes) {
+  if (fast_is_running()) {
+    show_placeholder_window("FAST RUNNING",
+                            "Stop the current fast before starting a new one.",
+                            "BACK Menu");
+    return;
+  }
+
+  global_target_minutes = target_minutes;
   if (!fast_start(target_minutes)) {
     show_placeholder_window("FAST RUNNING",
                             "Stop the current fast before starting a new one.",
@@ -1265,6 +1274,14 @@ static void start_fast_from_preset(uint16_t target_minutes, const char *label) {
 }
 
 static void start_fast_from_science_preset(uint16_t target_minutes) {
+  if (fast_is_running()) {
+    show_placeholder_window("FAST RUNNING",
+                            "Stop the current fast before starting a new one.",
+                            "BACK Menu");
+    return;
+  }
+
+  global_target_minutes = target_minutes;
   if (!fast_start(target_minutes)) {
     show_placeholder_window("FAST RUNNING",
                             "Stop the current fast before starting a new one.",
@@ -1676,40 +1693,52 @@ static void menu_backup_callback(int index, void *context) {
                           "BACK Menu");
 }
 
-static void preset_default_callback(int index, void *context) {
-  (void)index;
-  (void)context;
-  start_fast_from_preset(global_target_minutes, "STARTED");
-}
-
 static void preset_16h_callback(int index, void *context) {
   (void)index;
   (void)context;
-  start_fast_from_preset(16 * 60, "16H STARTED");
+  start_fast_from_preset(16 * 60);
 }
 
 static void preset_18h_callback(int index, void *context) {
   (void)index;
   (void)context;
-  start_fast_from_preset(18 * 60, "18H STARTED");
+  start_fast_from_preset(18 * 60);
 }
 
 static void preset_20h_callback(int index, void *context) {
   (void)index;
   (void)context;
-  start_fast_from_preset(20 * 60, "20H STARTED");
+  start_fast_from_preset(20 * 60);
 }
 
 static void preset_24h_callback(int index, void *context) {
   (void)index;
   (void)context;
-  start_fast_from_preset(24 * 60, "24H STARTED");
+  start_fast_from_preset(24 * 60);
+}
+
+static void preset_26h_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  start_fast_from_preset(26 * 60);
+}
+
+static void preset_28h_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  start_fast_from_preset(28 * 60);
+}
+
+static void preset_30h_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  start_fast_from_preset(30 * 60);
 }
 
 static void preset_36h_callback(int index, void *context) {
   (void)index;
   (void)context;
-  start_fast_from_preset(36 * 60, "36H STARTED");
+  start_fast_from_preset(36 * 60);
 }
 
 static void timer_select_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -2436,11 +2465,6 @@ static void configure_main_menu_items(void) {
 }
 
 static void configure_preset_items(void) {
-  s_presets_menu_items[PRESET_MENU_INDEX_DEFAULT] = (SimpleMenuItem) {
-    .title = "Use Default Target",
-    .subtitle = "Current app setting",
-    .callback = preset_default_callback
-  };
   s_presets_menu_items[PRESET_MENU_INDEX_16H] = (SimpleMenuItem) {
     .title = "16 hours",
     .subtitle = "Beginner baseline",
@@ -2460,6 +2484,21 @@ static void configure_preset_items(void) {
     .title = "24 hours",
     .subtitle = "OMAD extended",
     .callback = preset_24h_callback
+  };
+  s_presets_menu_items[PRESET_MENU_INDEX_26H] = (SimpleMenuItem) {
+    .title = "26 hours",
+    .subtitle = "Long adaptation",
+    .callback = preset_26h_callback
+  };
+  s_presets_menu_items[PRESET_MENU_INDEX_28H] = (SimpleMenuItem) {
+    .title = "28 hours",
+    .subtitle = "Extended burn",
+    .callback = preset_28h_callback
+  };
+  s_presets_menu_items[PRESET_MENU_INDEX_30H] = (SimpleMenuItem) {
+    .title = "30 hours",
+    .subtitle = "Deep focus",
+    .callback = preset_30h_callback
   };
   s_presets_menu_items[PRESET_MENU_INDEX_36H] = (SimpleMenuItem) {
     .title = "36 hours",
