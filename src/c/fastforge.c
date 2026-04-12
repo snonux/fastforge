@@ -224,6 +224,34 @@ static void add_text_layer(Layer *window_layer, TextLayer *text_layer) {
   layer_add_child(window_layer, text_layer_get_layer(text_layer));
 }
 
+static bool is_color_platform(void) {
+#ifdef PBL_COLOR
+  return true;
+#else
+  return false;
+#endif
+}
+
+static GColor theme_surface_background_color(void) {
+  return is_color_platform() ? GColorMintGreen : GColorWhite;
+}
+
+static GColor theme_goal_background_color(void) {
+  return is_color_platform() ? GColorOxfordBlue : GColorBlack;
+}
+
+static GColor theme_goal_text_color(void) {
+  return GColorWhite;
+}
+
+static GColor theme_progress_track_color(void) {
+  return GColorLightGray;
+}
+
+static GColor theme_progress_fill_color(void) {
+  return is_color_platform() ? GColorJaegerGreen : GColorGreen;
+}
+
 static Window *create_window_with_handlers(WindowHandlers handlers,
                                            ClickConfigProvider click_provider) {
   Window *window = window_create();
@@ -472,7 +500,7 @@ static int tick_x_for_seconds(uint32_t total_seconds, uint32_t tick_seconds, int
 
 static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_context_set_fill_color(ctx, theme_progress_track_color());
   graphics_fill_rect(ctx, bounds, 2, GCornersAll);
   if (!fast_is_running()) {
     return;
@@ -486,7 +514,7 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
   uint32_t total_seconds = (uint32_t)current_fast.target_minutes * 60;
   int fill_width = progress_width_for_elapsed(elapsed, total_seconds, bounds.size.w);
   if (fill_width > 0) {
-    graphics_context_set_fill_color(ctx, GColorGreen);
+    graphics_context_set_fill_color(ctx, theme_progress_fill_color());
     graphics_fill_rect(ctx, GRect(0, 0, fill_width, bounds.size.h), 2, GCornersAll);
   }
 
@@ -1263,7 +1291,7 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
 }
 
 static void goal_background_update_proc(Layer *layer, GContext *ctx) {
-  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_context_set_fill_color(ctx, theme_goal_background_color());
   graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 }
 
@@ -1348,25 +1376,25 @@ static void goal_window_load(Window *window) {
   s_goal_title_layer = create_text_layer(GRect(0, 20, bounds.size.w, 30),
                                          GTextAlignmentCenter,
                                          FONT_KEY_GOTHIC_28_BOLD,
-                                         GColorWhite, GColorBlack, false);
+                                         theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_title_layer, "GOAL HIT");
 
   s_goal_time_layer = create_text_layer(GRect(0, 56, bounds.size.w, 26),
                                         GTextAlignmentCenter,
                                         FONT_KEY_GOTHIC_24_BOLD,
-                                        GColorWhite, GColorBlack, false);
+                                        theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_time_layer, "Elapsed 00:00:00");
 
   s_goal_stage_layer = create_text_layer(GRect(0, 84, bounds.size.w, 24),
                                          GTextAlignmentCenter,
                                          FONT_KEY_GOTHIC_18_BOLD,
-                                         GColorWhite, GColorBlack, false);
+                                         theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_stage_layer, "Stage: --");
 
   s_goal_hint_layer = create_text_layer(GRect(0, 120, bounds.size.w, 42),
                                         GTextAlignmentCenter,
                                         FONT_KEY_GOTHIC_14_BOLD,
-                                        GColorWhite, GColorBlack, true);
+                                        theme_goal_text_color(), theme_goal_background_color(), true);
   text_layer_set_text(s_goal_hint_layer, "SELECT Stop\nDOWN Continue");
 
   add_text_layer(window_layer, s_goal_title_layer);
@@ -1832,22 +1860,25 @@ static void init_primary_windows(void) {
     .appear = menu_window_appear,
     .unload = menu_window_unload
   }, NULL);
+  window_set_background_color(s_menu_window, theme_surface_background_color());
 
   s_timer_window = create_window_with_handlers((WindowHandlers) {
     .load = timer_window_load,
     .unload = timer_window_unload
   }, timer_click_config_provider);
+  window_set_background_color(s_timer_window, theme_surface_background_color());
 
   s_goal_window = create_window_with_handlers((WindowHandlers) {
     .load = goal_window_load,
     .unload = goal_window_unload
   }, goal_click_config_provider);
-  window_set_background_color(s_goal_window, GColorBlack);
+  window_set_background_color(s_goal_window, theme_goal_background_color());
 
   s_presets_window = create_window_with_handlers((WindowHandlers) {
     .load = presets_window_load,
     .unload = presets_window_unload
   }, NULL);
+  window_set_background_color(s_presets_window, theme_surface_background_color());
 }
 
 static void init_history_windows(void) {
@@ -1862,12 +1893,15 @@ static void init_history_windows(void) {
     .appear = history_edit_window_appear,
     .unload = history_edit_window_unload
   }, history_edit_click_config_provider);
+  window_set_background_color(s_history_edit_window, theme_surface_background_color());
 
   s_running_edit_window = create_window_with_handlers((WindowHandlers) {
     .load = running_edit_window_load,
     .appear = running_edit_window_appear,
     .unload = running_edit_window_unload
   }, running_edit_click_config_provider);
+  window_set_background_color(s_running_edit_window, theme_surface_background_color());
+  window_set_background_color(s_history_window, theme_surface_background_color());
 }
 
 static void init_info_windows(void) {
@@ -1876,22 +1910,26 @@ static void init_info_windows(void) {
     .appear = stats_window_appear,
     .unload = stats_window_unload
   }, NULL);
+  window_set_background_color(s_stats_window, theme_surface_background_color());
 
   s_science_window = create_window_with_handlers((WindowHandlers) {
     .load = science_window_load,
     .appear = science_window_appear,
     .unload = science_window_unload
   }, science_click_config_provider);
+  window_set_background_color(s_science_window, theme_surface_background_color());
 
   s_settings_window = create_window_with_handlers((WindowHandlers) {
     .load = settings_window_load,
     .appear = settings_window_appear,
     .unload = settings_window_unload
   }, settings_click_config_provider);
+  window_set_background_color(s_settings_window, theme_surface_background_color());
   s_detail_window = create_window_with_handlers((WindowHandlers) {
     .load = detail_window_load,
     .unload = detail_window_unload
   }, placeholder_click_config_provider);
+  window_set_background_color(s_detail_window, theme_surface_background_color());
 }
 
 #ifdef DEBUG
