@@ -1144,7 +1144,7 @@ static void refresh_settings_window_content(void) {
            developer_mode_enabled ? "ON (timer dbg)" : "OFF");
   text_layer_set_text(s_settings_target_layer, s_settings_target_text);
   text_layer_set_text(s_settings_dev_layer, s_settings_dev_text);
-  text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nSELECT Dev  BACK Save");
+  text_layer_set_text(s_settings_hint_layer, "UP/DN Target\nSEL Dev\nBACK Save");
 #else
   text_layer_set_text(s_settings_target_layer, s_settings_target_text);
   text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nBACK Save");
@@ -1376,7 +1376,7 @@ static void refresh_timer_view(void) {
     snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
              global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
     snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: -- [DEV]" : "Stage: --");
-    text_layer_set_text(s_hint_layer, debug_controls_available() ? "SELECT Start  DOWN Menu\nHOLD DOWN Debug" : "SELECT Start  DOWN/BACK Menu");
+    text_layer_set_text(s_hint_layer, "SELECT Start\nDOWN Menu");
   } else {
     time_t elapsed = fastforge_now() - current_fast.start_time;
     if (elapsed < 0) {
@@ -1405,7 +1405,7 @@ static void refresh_timer_view(void) {
     }
     snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: %s [DEV]" : "Stage: %s",
              stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, debug_controls_available() ? "UP Edit  SELECT Stop\nDOWN Menu  HOLD Debug" : "UP Edit  SELECT Stop  DOWN/BACK Menu");
+    text_layer_set_text(s_hint_layer, "UP Edit  SEL Stop\nDOWN Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
@@ -2569,7 +2569,7 @@ static void settings_window_load(Window *window) {
   text_layer_set_text_alignment(s_settings_target_layer, GTextAlignmentCenter);
   text_layer_set_font(s_settings_target_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
 
-  s_settings_hint_layer = text_layer_create(GRect(6, 92, bounds.size.w - 12, 42));
+  s_settings_hint_layer = text_layer_create(GRect(6, 98, bounds.size.w - 12, 38));
   text_layer_set_background_color(s_settings_hint_layer, GColorClear);
   text_layer_set_text_color(s_settings_hint_layer, GColorBlack);
   text_layer_set_text_alignment(s_settings_hint_layer, GTextAlignmentCenter);
@@ -2577,11 +2577,11 @@ static void settings_window_load(Window *window) {
   text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
 
 #ifdef DEBUG
-  s_settings_dev_layer = text_layer_create(GRect(6, 78, bounds.size.w - 12, 24));
+  s_settings_dev_layer = text_layer_create(GRect(6, 76, bounds.size.w - 12, 18));
   text_layer_set_background_color(s_settings_dev_layer, GColorClear);
   text_layer_set_text_color(s_settings_dev_layer, GColorBlack);
   text_layer_set_text_alignment(s_settings_dev_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
 #endif
 
   layer_add_child(window_layer, text_layer_get_layer(s_settings_title_layer));
