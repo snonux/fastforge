@@ -91,6 +91,7 @@ static char s_title_text[24];
 static char s_timer_text[16];
 static char s_detail_text[48];
 static char s_stage_text[32];
+static char s_hint_text[48];
 static char s_goal_time_text[24];
 static char s_goal_stage_text[24];
 static char s_menu_stop_subtitle[32];
@@ -125,6 +126,8 @@ static void sync_main_menu_state(void);
 static void refresh_stats_window_content(void);
 static void history_menu_reload(void);
 static void refresh_running_edit_window_content(void);
+static void recompute_streak_data_from_history(void);
+static time_t entry_duration_seconds(const FastEntry *entry);
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -159,6 +162,122 @@ static void normalize_loaded_data(void) {
   if (current_fast.end_time != 0 && current_fast.end_time < current_fast.start_time) {
     current_fast.end_time = 0;
   }
+}
+
+static time_t local_day_start(time_t timestamp) {
+  if (timestamp <= 0) {
+    return 0;
+  }
+
+  struct tm tm_copy;
+  struct tm *tm_info = localtime(&timestamp);
+  if (!tm_info) {
+    return 0;
+  }
+
+  tm_copy = *tm_info;
+  tm_copy.tm_hour = 0;
+  tm_copy.tm_min = 0;
+  tm_copy.tm_sec = 0;
+  tm_copy.tm_isdst = -1;
+  return mktime(&tm_copy);
+}
+
+static int compare_time_t_ascending(const void *a, const void *b) {
+  const time_t time_a = *(const time_t *)a;
+  const time_t time_b = *(const time_t *)b;
+  if (time_a < time_b) {
+    return -1;
+  }
+  if (time_a > time_b) {
+    return 1;
+  }
+  return 0;
+}
+
+static bool is_next_local_day(time_t first_day, time_t second_day) {
+  if (first_day <= 0 || second_day <= 0) {
+    return false;
+  }
+
+  struct tm next_day_tm;
+  struct tm *tm_info = localtime(&first_day);
+  if (!tm_info) {
+    return false;
+  }
+
+  next_day_tm = *tm_info;
+  next_day_tm.tm_mday += 1;
+  next_day_tm.tm_hour = 0;
+  next_day_tm.tm_min = 0;
+  next_day_tm.tm_sec = 0;
+  next_day_tm.tm_isdst = -1;
+  time_t expected_next_day = mktime(&next_day_tm);
+  return expected_next_day == second_day;
+}
+
+static void recompute_streak_data_from_history(void) {
+  streak_data.current_streak = 0;
+  streak_data.longest_streak = 0;
+  streak_data.last_completed_fast_end = 0;
+
+  if (history_count <= 0) {
+    return;
+  }
+
+  time_t completion_days[MAX_FASTS];
+  int completion_day_count = 0;
+
+  for (int i = 0; i < history_count; i++) {
+    const FastEntry *entry = &history[i];
+    time_t duration = entry_duration_seconds(entry);
+    if (duration <= 0 || entry->end_time <= 0) {
+      continue;
+    }
+
+    if (entry->end_time > streak_data.last_completed_fast_end) {
+      streak_data.last_completed_fast_end = entry->end_time;
+    }
+
+    time_t day_start = local_day_start(entry->end_time);
+    if (day_start <= 0) {
+      continue;
+    }
+    completion_days[completion_day_count++] = day_start;
+  }
+
+  if (completion_day_count == 0) {
+    return;
+  }
+
+  qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
+
+  uint16_t run_length = 0;
+  uint16_t longest = 0;
+  for (int i = 0; i < completion_day_count; i++) {
+    if (i == 0 || completion_days[i] == completion_days[i - 1]) {
+      if (i == 0) {
+        run_length = 1;
+      }
+      continue;
+    }
+
+    if (is_next_local_day(completion_days[i - 1], completion_days[i])) {
+      run_length++;
+    } else {
+      run_length = 1;
+    }
+
+    if (run_length > longest) {
+      longest = run_length;
+    }
+  }
+
+  if (longest == 0) {
+    longest = 1;
+  }
+  streak_data.current_streak = run_length;
+  streak_data.longest_streak = longest;
 }
 
 void save_all_data(void) {
@@ -207,6 +326,7 @@ void load_all_data(void) {
   }
 
   normalize_loaded_data();
+  recompute_streak_data_from_history();
 }
 
 bool fast_is_running(void) {
@@ -376,7 +496,10 @@ static void refresh_stats_window_content(void) {
     snprintf(s_stats_body_text, sizeof(s_stats_body_text),
              "No completed fasts yet.\n"
              "Start and stop your first\n"
-             "fast to populate stats.");
+             "fast to populate stats.\n"
+             "Streak: %u current / %u best",
+             streak_data.current_streak,
+             streak_data.longest_streak);
   } else {
     char avg_text[20];
     char total_text[20];
@@ -391,13 +514,16 @@ static void refresh_stats_window_content(void) {
              "Avg fast: %s\n"
              "Total fasted: %s\n"
              "Success: %d%% (%d/%d)\n"
-             "Longest: %s",
+             "Longest: %s\n"
+             "Streak: %u / %u",
              avg_text,
              total_text,
              success_rate,
              successful_count,
              completed_count,
-             longest_text);
+             longest_text,
+             streak_data.current_streak,
+             streak_data.longest_streak);
   }
 
   text_layer_set_text(s_stats_body_layer, s_stats_body_text);
@@ -462,14 +588,6 @@ static void append_history_entry(const FastEntry *entry) {
   history[MAX_FASTS - 1] = *entry;
 }
 
-static void mark_fast_completed(time_t end_time) {
-  streak_data.current_streak++;
-  if (streak_data.current_streak > streak_data.longest_streak) {
-    streak_data.longest_streak = streak_data.current_streak;
-  }
-  streak_data.last_completed_fast_end = end_time;
-}
-
 static uint16_t resolve_target_minutes(uint16_t preset_target_minutes) {
   if (preset_target_minutes > 0) {
     global_target_minutes = preset_target_minutes;
@@ -532,7 +650,8 @@ bool fast_stop(void) {
     completed.end_time = completed.start_time;
   }
   append_history_entry(&completed);
-  mark_fast_completed(completed.end_time);
+  sort_history_by_end_time();
+  recompute_streak_data_from_history();
   memset(&current_fast, 0, sizeof(current_fast));
   if (alarm_timer) {
     app_timer_cancel(alarm_timer);
@@ -631,9 +750,10 @@ static void refresh_timer_view(void) {
   if (!fast_is_running()) {
     snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
     format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
-    snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um", global_target_minutes);
+    snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
+             global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-    text_layer_set_text(s_hint_layer, "SELECT Start\nBACK/DOWN Menu");
+    snprintf(s_hint_text, sizeof(s_hint_text), "SELECT Start  DOWN/BACK Menu");
   } else {
     time_t elapsed = time(NULL) - current_fast.start_time;
     if (elapsed < 0) {
@@ -652,20 +772,23 @@ static void refresh_timer_view(void) {
       }
       char elapsed_text[16];
       format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
-      snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s", elapsed_text);
+      snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
+               elapsed_text, streak_data.current_streak, streak_data.longest_streak);
     } else {
       snprintf(s_title_text, sizeof(s_title_text), "ELAPSED");
       format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
-      snprintf(s_detail_text, sizeof(s_detail_text), "No target set");
+      snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
+               streak_data.current_streak, streak_data.longest_streak);
     }
     snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, "UP Edit  SELECT Stop\nBACK/DOWN Menu");
+    snprintf(s_hint_text, sizeof(s_hint_text), "UP Edit  SELECT Stop  DOWN/BACK Menu");
   }
 
   text_layer_set_text(s_title_layer, s_title_text);
   text_layer_set_text(s_timer_layer, s_timer_text);
   text_layer_set_text(s_detail_layer, s_detail_text);
   text_layer_set_text(s_stage_layer, s_stage_text);
+  text_layer_set_text(s_hint_layer, s_hint_text);
   if (s_progress_layer) {
     layer_mark_dirty(s_progress_layer);
   }
@@ -766,8 +889,9 @@ static int16_t history_menu_get_header_height(MenuLayer *menu_layer, uint16_t se
 static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
   (void)section_index;
   (void)data;
-  static char header_text[24];
-  snprintf(header_text, sizeof(header_text), "History (%d)", history_count);
+  static char header_text[40];
+  snprintf(header_text, sizeof(header_text), "History %d  S:%u/%u",
+           history_count, streak_data.current_streak, streak_data.longest_streak);
   menu_cell_basic_header_draw(ctx, cell_layer, header_text);
 }
 
@@ -900,6 +1024,7 @@ static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void 
   s_history_edit_draft.max_stage_reached = stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft));
   history[s_history_edit_index] = s_history_edit_draft;
   sort_history_by_end_time();
+  recompute_streak_data_from_history();
   save_all_data();
   s_history_edit_dirty = false;
   refresh_history_row_cache();
