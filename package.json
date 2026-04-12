@@ -23,7 +23,11 @@
       "watchface": false
     },
     "messageKeys": [
-      "dummy"
+      "EXPORT_COMMAND",
+      "EXPORT_SEQUENCE",
+      "EXPORT_TOTAL",
+      "EXPORT_ROW",
+      "EXPORT_STATUS"
     ],
     "resources": {
       "media": []

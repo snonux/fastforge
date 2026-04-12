@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "fastforge.h"
+#include "message_keys.auto.h"
 
 enum {
   MAIN_MENU_INDEX_START_NEW = 0,
@@ -136,6 +137,15 @@ static EditField s_history_edit_field = EDIT_FIELD_START;
 static bool s_history_edit_dirty = false;
 static time_t s_last_streak_refresh_day = 0;
 
+#ifndef PBL_PLATFORM_APLITE
+typedef struct {
+  bool active;
+  int next_row;
+  int total_rows;
+} HistoryExportState;
+
+static HistoryExportState s_history_export = {0};
+#endif
 static const char *const s_note_tags[] = {
   "",
   "felt amazing",
@@ -179,6 +189,7 @@ static void recompute_streak_data_from_history(void);
 static time_t entry_duration_seconds(const FastEntry *entry);
 static void recompute_streak_data_for_today(void);
 static bool refresh_streak_if_day_changed(void);
+static void request_history_export(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
 #endif
@@ -487,6 +498,110 @@ static void format_entry_datetime(time_t timestamp, char *buffer, size_t size) {
   strftime(buffer, size, "%b %d %H:%M", tm_info);
 }
 
+#ifndef PBL_PLATFORM_APLITE
+static size_t csv_append_text(char *buffer, size_t size, size_t offset, const char *value) {
+  if (!buffer || size == 0 || offset >= size) {
+    return offset;
+  }
+
+  bool needs_quotes = false;
+  if (value) {
+    for (const char *cursor = value; *cursor; cursor++) {
+      if (*cursor == ',' || *cursor == '"' || *cursor == '\n' || *cursor == '\r') {
+        needs_quotes = true;
+        break;
+      }
+    }
+  }
+
+  if (needs_quotes) {
+    if (offset + 1 < size) {
+      buffer[offset++] = '"';
+    }
+    if (value) {
+      for (const char *cursor = value; *cursor && offset + 1 < size; cursor++) {
+        if (*cursor == '"') {
+          if (offset + 2 >= size) {
+            break;
+          }
+          buffer[offset++] = '"';
+          buffer[offset++] = '"';
+        } else {
+          buffer[offset++] = *cursor;
+        }
+      }
+    }
+    if (offset + 1 < size) {
+      buffer[offset++] = '"';
+    }
+  } else {
+    if (value) {
+      for (const char *cursor = value; *cursor && offset + 1 < size; cursor++) {
+        buffer[offset++] = *cursor;
+      }
+    }
+  }
+
+  if (offset < size) {
+    buffer[offset] = '\0';
+  }
+  return offset;
+}
+
+static size_t csv_append_int(char *buffer, size_t size, size_t offset, long value) {
+  char number_text[16];
+  snprintf(number_text, sizeof(number_text), "%ld", value);
+  return csv_append_text(buffer, size, offset, number_text);
+}
+
+static void format_history_csv_row(const FastEntry *entry, char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+
+  buffer[0] = '\0';
+  if (!entry) {
+    return;
+  }
+
+  size_t offset = 0;
+  offset = csv_append_int(buffer, size, offset, (long)entry->start_time);
+  if (offset + 1 < size) {
+    buffer[offset++] = ',';
+    buffer[offset] = '\0';
+  }
+  offset = csv_append_int(buffer, size, offset, (long)entry->end_time);
+  if (offset + 1 < size) {
+    buffer[offset++] = ',';
+    buffer[offset] = '\0';
+  }
+  offset = csv_append_int(buffer, size, offset, (long)entry->target_minutes);
+  if (offset + 1 < size) {
+    buffer[offset++] = ',';
+    buffer[offset] = '\0';
+  }
+  offset = csv_append_text(buffer, size, offset, entry->note);
+  if (offset + 1 < size) {
+    buffer[offset++] = ',';
+    buffer[offset] = '\0';
+  }
+  (void)csv_append_int(buffer, size, offset, (long)entry->max_stage_reached);
+}
+
+static void format_history_csv_header(char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+  snprintf(buffer, size, "start_time,end_time,target_minutes,note,max_stage_reached");
+}
+
+static void stop_history_export(void) {
+  s_history_export.active = false;
+  s_history_export.next_row = 0;
+  s_history_export.total_rows = 0;
+}
+#endif
+
 static const char *milestone_badge_label_for_level(uint8_t stage_level) {
   if (stage_level >= 3) {
     return "Deep Ketosis";
@@ -705,6 +820,98 @@ static const char *stage_text_for_elapsed(time_t elapsed_seconds) {
   }
   return "GLYCOGEN";
 }
+
+#ifndef PBL_PLATFORM_APLITE
+static void history_export_send_next(void);
+
+static void history_export_on_sent(DictionaryIterator *iterator, void *context) {
+  (void)iterator;
+  (void)context;
+  if (!s_history_export.active) {
+    return;
+  }
+
+  s_history_export.next_row++;
+  if (s_history_export.next_row >= s_history_export.total_rows) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "History export finished with %d rows", s_history_export.total_rows);
+    stop_history_export();
+    return;
+  }
+
+  history_export_send_next();
+}
+
+static void history_export_on_failed(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
+  (void)iterator;
+  (void)context;
+  APP_LOG(APP_LOG_LEVEL_ERROR, "History export failed at row %d (%d)", s_history_export.next_row, reason);
+  stop_history_export();
+}
+
+static void history_export_send_message(const char *row_text) {
+  DictionaryIterator *outbox = NULL;
+  AppMessageResult result = app_message_outbox_begin(&outbox);
+  if (result != APP_MSG_OK || !outbox) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to start history export outbox (%d)", result);
+    stop_history_export();
+    return;
+  }
+
+  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_SEQUENCE, s_history_export.next_row);
+  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_TOTAL, s_history_export.total_rows);
+  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_ROW, row_text ? row_text : "");
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to queue history export message (%d)", result);
+    stop_history_export();
+  }
+}
+
+static void history_export_send_next(void) {
+  if (!s_history_export.active) {
+    return;
+  }
+
+  char row_text[128];
+  if (s_history_export.next_row == 0) {
+    format_history_csv_header(row_text, sizeof(row_text));
+  } else {
+    int history_index = s_history_export.next_row - 1;
+    if (history_index < 0 || history_index >= history_count) {
+      stop_history_export();
+      return;
+    }
+    format_history_csv_row(&history[history_index], row_text, sizeof(row_text));
+  }
+
+  history_export_send_message(row_text);
+}
+
+static bool history_export_begin(void) {
+  if (s_history_export.active) {
+    return false;
+  }
+
+  s_history_export.active = true;
+  s_history_export.next_row = 0;
+  s_history_export.total_rows = history_count + 1;
+  history_export_send_next();
+  return true;
+}
+
+static void history_export_inbox_received(DictionaryIterator *iterator, void *context) {
+  (void)context;
+  Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_EXPORT_COMMAND);
+  if (!command_tuple || command_tuple->type != TUPLE_CSTRING) {
+    return;
+  }
+
+  if (strcmp(command_tuple->value->cstring, "EXPORT_HISTORY") == 0) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "Received export request from companion");
+    history_export_begin();
+  }
+}
+#endif
 
 static void update_max_stage_if_needed(time_t elapsed_seconds) {
   if (!fast_is_running()) {
@@ -1688,9 +1895,26 @@ static void menu_settings_callback(int index, void *context) {
 static void menu_backup_callback(int index, void *context) {
   (void)index;
   (void)context;
+  request_history_export();
+}
+
+static void request_history_export(void) {
+#ifndef PBL_PLATFORM_APLITE
+  if (!history_export_begin()) {
+    show_placeholder_window("BACKUP BUSY",
+                            "A history export is already in progress.",
+                            "BACK Menu");
+    return;
+  }
+
   show_placeholder_window("BACKUP TO PHONE",
-                          "Backup flow pending.\nAppMessage export entry point is ready.",
+                          "CSV export started.\nCompanion stub stores the file.",
                           "BACK Menu");
+#else
+  show_placeholder_window("BACKUP UNAVAILABLE",
+                          "AppMessage backup is disabled on Aplite.",
+                          "BACK Menu");
+#endif
 }
 
 static void preset_16h_callback(int index, void *context) {
@@ -2624,6 +2848,16 @@ static void destroy_windows(void) {
 
 static void init(void) {
   load_all_data();
+#ifndef PBL_PLATFORM_APLITE
+  AppMessageResult app_message_result = app_message_open(128, 128);
+  if (app_message_result != APP_MSG_OK) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "app_message_open failed (%d)", app_message_result);
+  } else {
+    app_message_register_inbox_received(history_export_inbox_received);
+    app_message_register_outbox_sent(history_export_on_sent);
+    app_message_register_outbox_failed(history_export_on_failed);
+  }
+#endif
   tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   configure_main_menu_items();
   configure_preset_items();
@@ -2639,6 +2873,9 @@ static void deinit(void) {
     app_timer_cancel(alarm_timer);
     alarm_timer = NULL;
   }
+#ifndef PBL_PLATFORM_APLITE
+  stop_history_export();
+#endif
   target_time = 0;
   save_all_data();
   tick_timer_service_unsubscribe();
