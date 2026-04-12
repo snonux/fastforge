@@ -111,6 +111,7 @@ static int s_history_edit_index = -1;
 static FastEntry s_history_edit_draft = {0};
 static EditField s_history_edit_field = EDIT_FIELD_START;
 static bool s_history_edit_dirty = false;
+static time_t s_last_streak_refresh_day = 0;
 static const uint32_t s_alarm_vibe[] = {200, 100, 200, 100, 400, 100, 200};
 static VibePattern s_alarm_pattern = {
   .durations = s_alarm_vibe,
@@ -125,6 +126,8 @@ static void history_menu_reload(void);
 static void refresh_running_edit_window_content(void);
 static void recompute_streak_data_from_history(void);
 static time_t entry_duration_seconds(const FastEntry *entry);
+static void recompute_streak_data_for_today(void);
+static bool refresh_streak_if_day_changed(void);
 
 static bool safe_push_window(Window *window, bool animated) {
   if (!window) {
@@ -285,6 +288,22 @@ static void recompute_streak_data_from_history(void) {
   streak_data.longest_streak = longest;
 }
 
+static void recompute_streak_data_for_today(void) {
+  recompute_streak_data_from_history();
+  s_last_streak_refresh_day = local_day_start(time(NULL));
+}
+
+static bool refresh_streak_if_day_changed(void) {
+  time_t today_day_start = local_day_start(time(NULL));
+  if (today_day_start <= 0 || today_day_start == s_last_streak_refresh_day) {
+    return false;
+  }
+
+  recompute_streak_data_for_today();
+  save_all_data();
+  return true;
+}
+
 void save_all_data(void) {
   persist_write_int(KEY_HISTORY_COUNT, history_count);
   persist_write_data(KEY_HISTORY_DATA, history, sizeof(FastEntry) * history_count);
@@ -331,7 +350,7 @@ void load_all_data(void) {
   }
 
   normalize_loaded_data();
-  recompute_streak_data_from_history();
+  recompute_streak_data_for_today();
 }
 
 bool fast_is_running(void) {
@@ -638,7 +657,7 @@ bool fast_stop(void) {
   }
   append_history_entry(&completed);
   sort_history_by_end_time();
-  recompute_streak_data_from_history();
+  recompute_streak_data_for_today();
   memset(&current_fast, 0, sizeof(current_fast));
   if (alarm_timer) {
     app_timer_cancel(alarm_timer);
@@ -1012,7 +1031,7 @@ static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void 
   s_history_edit_draft.max_stage_reached = stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft));
   history[s_history_edit_index] = s_history_edit_draft;
   sort_history_by_end_time();
-  recompute_streak_data_from_history();
+  recompute_streak_data_for_today();
   save_all_data();
   s_history_edit_dirty = false;
   refresh_stats_window_content();
@@ -1328,6 +1347,10 @@ static void placeholder_click_config_provider(void *context) {
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   (void)tick_time;
   (void)units_changed;
+  if (refresh_streak_if_day_changed()) {
+    refresh_stats_window_content();
+    history_menu_reload();
+  }
   refresh_timer_view();
   refresh_running_edit_window_content();
 }
