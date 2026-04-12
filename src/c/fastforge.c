@@ -1034,6 +1034,7 @@ static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void 
   recompute_streak_data_for_today();
   save_all_data();
   s_history_edit_dirty = false;
+  refresh_timer_view();
   refresh_stats_window_content();
   history_menu_reload();
   window_stack_remove(s_history_edit_window, true);
