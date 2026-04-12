@@ -718,26 +718,59 @@ static int16_t history_menu_get_header_height(MenuLayer *menu_layer, uint16_t se
   return MENU_CELL_BASIC_HEADER_HEIGHT;
 }
 
+static int16_t history_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  (void)menu_layer;
+  (void)cell_index;
+  (void)data;
+  return 44;
+}
+
 static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
   (void)section_index;
   (void)data;
   char header_text[40];
+  GRect bounds = layer_get_bounds(cell_layer);
   snprintf(header_text, sizeof(header_text), "History %d  S:%u/%u",
            history_count, streak_data.current_streak, streak_data.longest_streak);
-  menu_cell_basic_header_draw(ctx, cell_layer, header_text);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, header_text,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(4, 0, bounds.size.w - 8, bounds.size.h),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
   (void)data;
   int row = cell_index->row;
+  GRect bounds = layer_get_bounds(cell_layer);
+  bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
+  GColor background = highlighted ? GColorBlack : GColorWhite;
+  GColor foreground = highlighted ? GColorWhite : GColorBlack;
+
+  graphics_context_set_fill_color(ctx, background);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, foreground);
+
   if (row < 0 || row >= MAX_FASTS) {
-    menu_cell_basic_draw(ctx, cell_layer, "Unavailable", "", NULL);
+    graphics_draw_text(ctx, "Unavailable",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(4, 0, bounds.size.w - 8, 20),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     return;
   }
   char title[24];
   char subtitle[96];
   format_history_row(row, title, sizeof(title), subtitle, sizeof(subtitle));
-  menu_cell_basic_draw(ctx, cell_layer, title, subtitle, NULL);
+  graphics_draw_text(ctx, title,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(4, 2, bounds.size.w - 8, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, subtitle,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(4, 20, bounds.size.w - 8, bounds.size.h - 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void refresh_history_edit_window_content(void) {
@@ -1436,11 +1469,18 @@ static void history_window_load(Window *window) {
   GRect bounds = layer_get_bounds(window_layer);
 
   s_history_menu_layer = menu_layer_create(bounds);
+  menu_layer_set_normal_colors(s_history_menu_layer,
+                               GColorWhite,
+                               GColorBlack);
+  menu_layer_set_highlight_colors(s_history_menu_layer,
+                                  GColorBlack,
+                                  GColorWhite);
   menu_layer_set_click_config_onto_window(s_history_menu_layer, window);
   menu_layer_set_callbacks(s_history_menu_layer, NULL, (MenuLayerCallbacks) {
     .get_num_sections = history_menu_get_num_sections,
     .get_num_rows = history_menu_get_num_rows,
     .get_header_height = history_menu_get_header_height,
+    .get_cell_height = history_menu_get_cell_height,
     .draw_header = history_menu_draw_header,
     .draw_row = history_menu_draw_row,
     .select_click = history_menu_select_callback
@@ -1901,7 +1941,7 @@ static void init_history_windows(void) {
     .unload = running_edit_window_unload
   }, running_edit_click_config_provider);
   window_set_background_color(s_running_edit_window, theme_surface_background_color());
-  window_set_background_color(s_history_window, theme_surface_background_color());
+  window_set_background_color(s_history_window, GColorWhite);
 }
 
 static void init_info_windows(void) {
