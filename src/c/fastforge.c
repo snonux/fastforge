@@ -1,4 +1,12 @@
 #include <pebble.h>
+#include "fastforge.h"
+
+FastEntry history[MAX_FASTS];
+int history_count = 0;
+FastEntry current_fast = {0};
+uint16_t global_target_minutes = DEFAULT_TARGET_MINUTES;
+AppTimer *alarm_timer = NULL;
+time_t target_time = 0;
 
 static Window *s_main_window;
 static TextLayer *s_text_layer;
