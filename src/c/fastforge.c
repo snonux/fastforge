@@ -84,9 +84,13 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
 
   graphics_context_set_stroke_color(ctx, GColorBlack);
   int tick_12h_x = tick_x_for_seconds(total_seconds, 12 * 3600, bounds.size.w);
+  int tick_18h_x = tick_x_for_seconds(total_seconds, 18 * 3600, bounds.size.w);
   int tick_24h_x = tick_x_for_seconds(total_seconds, 24 * 3600, bounds.size.w);
   if (tick_12h_x >= 0) {
     graphics_draw_line(ctx, GPoint(tick_12h_x, 0), GPoint(tick_12h_x, bounds.size.h - 1));
+  }
+  if (tick_18h_x >= 0) {
+    graphics_draw_line(ctx, GPoint(tick_18h_x, 0), GPoint(tick_18h_x, bounds.size.h - 1));
   }
   if (tick_24h_x >= 0) {
     graphics_draw_line(ctx, GPoint(tick_24h_x, 0), GPoint(tick_24h_x, bounds.size.h - 1));
