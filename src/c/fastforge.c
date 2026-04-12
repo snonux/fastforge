@@ -273,7 +273,15 @@ static void recompute_streak_data_from_history(void) {
   if (longest == 0) {
     longest = 1;
   }
-  streak_data.current_streak = run_length;
+
+  time_t today_day_start = local_day_start(time(NULL));
+  time_t last_completion_day = completion_days[completion_day_count - 1];
+  if (last_completion_day == today_day_start ||
+      is_next_local_day(last_completion_day, today_day_start)) {
+    streak_data.current_streak = run_length;
+  } else {
+    streak_data.current_streak = 0;
+  }
   streak_data.longest_streak = longest;
 }
 
