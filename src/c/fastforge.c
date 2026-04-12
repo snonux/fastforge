@@ -1,4 +1,5 @@
 #include <pebble.h>
+#include <stdlib.h>
 #include <string.h>
 #include "fastforge.h"
 
@@ -263,6 +264,31 @@ static int history_index_for_row(int row) {
     return -1;
   }
   return history_count - 1 - row;
+}
+
+static int compare_history_entries_by_end_time(const void *a, const void *b) {
+  const FastEntry *entry_a = a;
+  const FastEntry *entry_b = b;
+  if (entry_a->end_time < entry_b->end_time) {
+    return -1;
+  }
+  if (entry_a->end_time > entry_b->end_time) {
+    return 1;
+  }
+  if (entry_a->start_time < entry_b->start_time) {
+    return -1;
+  }
+  if (entry_a->start_time > entry_b->start_time) {
+    return 1;
+  }
+  return 0;
+}
+
+static void sort_history_by_end_time(void) {
+  if (history_count <= 1) {
+    return;
+  }
+  qsort(history, (size_t)history_count, sizeof(FastEntry), compare_history_entries_by_end_time);
 }
 
 static void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size) {
@@ -856,6 +882,7 @@ static void history_edit_save_click_handler(ClickRecognizerRef recognizer, void 
   }
   s_history_edit_draft.max_stage_reached = stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft));
   history[s_history_edit_index] = s_history_edit_draft;
+  sort_history_by_end_time();
   save_all_data();
   s_history_edit_dirty = false;
   refresh_history_row_cache();
