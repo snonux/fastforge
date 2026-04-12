@@ -10,6 +10,7 @@ This file is the primary workflow reference for FastForge contributors.
 sudo dnf update
 sudo dnf install -y python3-pip nodejs SDL-devel dtc uv just
 uv tool install pebble-tool --python 3.13
+export PATH="$HOME/.local/bin:$PATH"
 pebble sdk install latest
 ```
 
@@ -44,7 +45,7 @@ Available commands:
 Daily loop after reboot:
 
 1. Restore PATH (`export PATH="$HOME/.local/bin:$PATH"`).
-2. `cd /home/paul/git/fastforge`
+2. `cd /path/to/fastforge`
 3. `just dev`
 4. In a second terminal run `just logs`
 
@@ -74,5 +75,5 @@ Do not commit generated artifacts:
 - Build fails: run `just clean` then `just rebuild`.
 - Change app version: update `package.json`, then run `just dev`.
 
-Last updated: April 12, 2026
+Last updated: April 12, 2026 (follow-up fix)
 Maintained for: FastForge agents
