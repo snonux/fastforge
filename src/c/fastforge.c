@@ -1,7 +1,8 @@
-#include <pebble.h>
+#include "fastforge.h"
+
 #include <stdlib.h>
 #include <string.h>
-#include "fastforge.h"
+
 #include "message_keys.auto.h"
 
 enum {
@@ -137,6 +138,7 @@ static EditField s_history_edit_field = EDIT_FIELD_START;
 static bool s_history_edit_dirty = false;
 static time_t s_last_streak_refresh_day = 0;
 
+/* Snapshot history before AppMessage export so rows stay stable while sending. */
 #ifndef PBL_PLATFORM_APLITE
 typedef struct {
   bool active;
@@ -292,19 +294,10 @@ static time_t fastforge_now(void) {
 }
 #endif
 
-static void recompute_streak_data_from_history(void) {
-  streak_data.current_streak = 0;
-  streak_data.longest_streak = 0;
-  streak_data.last_completed_fast_end = 0;
-
-  if (history_count <= 0) {
-    return;
-  }
-
-  time_t completion_days[MAX_FASTS];
+static int collect_completion_days(time_t *completion_days, int max_days) {
   int completion_day_count = 0;
 
-  for (int i = 0; i < history_count; i++) {
+  for (int i = 0; i < history_count && completion_day_count < max_days; i++) {
     const FastEntry *entry = &history[i];
     time_t duration = entry_duration_seconds(entry);
     if (duration <= 0 || entry->end_time <= 0) {
@@ -322,10 +315,11 @@ static void recompute_streak_data_from_history(void) {
     completion_days[completion_day_count++] = day_start;
   }
 
-  if (completion_day_count == 0) {
-    return;
-  }
+  return completion_day_count;
+}
 
+/* Streaks come from unique local completion days, sorted before counting runs. */
+static void apply_completion_days_to_streaks(time_t *completion_days, int completion_day_count) {
   qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
 
   uint16_t run_length = 0;
@@ -364,6 +358,24 @@ static void recompute_streak_data_from_history(void) {
   streak_data.longest_streak = longest;
 }
 
+static void recompute_streak_data_from_history(void) {
+  streak_data.current_streak = 0;
+  streak_data.longest_streak = 0;
+  streak_data.last_completed_fast_end = 0;
+
+  if (history_count <= 0) {
+    return;
+  }
+
+  time_t completion_days[MAX_FASTS];
+  int completion_day_count = collect_completion_days(completion_days, MAX_FASTS);
+  if (completion_day_count == 0) {
+    return;
+  }
+
+  apply_completion_days_to_streaks(completion_days, completion_day_count);
+}
+
 static void recompute_streak_data_for_today(void) {
   recompute_streak_data_from_history();
   s_last_streak_refresh_day = local_day_start(fastforge_now());
@@ -393,7 +405,7 @@ void save_all_data(void) {
 #endif
 }
 
-void load_all_data(void) {
+static void reset_loaded_data(void) {
   history_count = 0;
   memset(history, 0, sizeof(history));
   memset(&current_fast, 0, sizeof(current_fast));
@@ -405,7 +417,9 @@ void load_all_data(void) {
   s_fake_time_offset_seconds = 0;
   s_current_fast_origin_offset_seconds = 0;
 #endif
+}
 
+static void load_persisted_base_data(void) {
   if (persist_exists(KEY_HISTORY_COUNT)) {
     history_count = clamp_history_count(persist_read_int(KEY_HISTORY_COUNT));
   }
@@ -438,6 +452,9 @@ void load_all_data(void) {
   if (persist_exists(KEY_DEV_MODE)) {
     developer_mode_enabled = persist_read_bool(KEY_DEV_MODE);
   }
+}
+
+static void load_persisted_debug_data(void) {
 #ifdef DEBUG
   if (persist_exists(KEY_DEBUG_FAKE_OFFSET)) {
     s_fake_time_offset_seconds = persist_read_int(KEY_DEBUG_FAKE_OFFSET);
@@ -447,9 +464,18 @@ void load_all_data(void) {
     s_current_fast_origin_offset_seconds = persist_read_int(KEY_DEBUG_FAST_ORIGIN);
   }
 #endif
+}
 
+static void finish_loaded_data(void) {
   normalize_loaded_data();
   recompute_streak_data_for_today();
+}
+
+void load_all_data(void) {
+  reset_loaded_data();
+  load_persisted_base_data();
+  load_persisted_debug_data();
+  finish_loaded_data();
 }
 
 bool fast_is_running(void) {
@@ -733,15 +759,12 @@ static void format_history_row(int row, char *title, size_t title_size, char *su
   snprintf(subtitle, subtitle_size, "%s%s%s", duration_text, badge_text, note_text);
 }
 
-static void refresh_stats_window_content(void) {
-  if (!s_stats_body_layer) {
-    return;
-  }
-
-  time_t total_seconds = 0;
-  time_t longest_seconds = 0;
-  int completed_count = 0;
-  int successful_count = 0;
+static void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds,
+                                  int *completed_count, int *successful_count) {
+  time_t total_seconds_value = 0;
+  time_t longest_seconds_value = 0;
+  int completed_count_value = 0;
+  int successful_count_value = 0;
 
   for (int i = 0; i < history_count; i++) {
     const FastEntry *entry = &history[i];
@@ -750,16 +773,32 @@ static void refresh_stats_window_content(void) {
       continue;
     }
 
-    completed_count++;
-    total_seconds += duration;
-    if (duration > longest_seconds) {
-      longest_seconds = duration;
+    completed_count_value++;
+    total_seconds_value += duration;
+    if (duration > longest_seconds_value) {
+      longest_seconds_value = duration;
     }
     if (entry->target_minutes > 0 && duration >= (time_t)entry->target_minutes * 60) {
-      successful_count++;
+      successful_count_value++;
     }
   }
 
+  if (total_seconds) {
+    *total_seconds = total_seconds_value;
+  }
+  if (longest_seconds) {
+    *longest_seconds = longest_seconds_value;
+  }
+  if (completed_count) {
+    *completed_count = completed_count_value;
+  }
+  if (successful_count) {
+    *successful_count = successful_count_value;
+  }
+}
+
+static void format_stats_window_body(time_t total_seconds, time_t longest_seconds,
+                                     int completed_count, int successful_count) {
   if (completed_count == 0) {
     snprintf(s_stats_body_text, sizeof(s_stats_body_text),
              "No completed fasts yet.\n"
@@ -793,7 +832,19 @@ static void refresh_stats_window_content(void) {
              streak_data.current_streak,
              streak_data.longest_streak);
   }
+}
 
+static void refresh_stats_window_content(void) {
+  if (!s_stats_body_layer) {
+    return;
+  }
+
+  time_t total_seconds = 0;
+  time_t longest_seconds = 0;
+  int completed_count = 0;
+  int successful_count = 0;
+  collect_stats_summary(&total_seconds, &longest_seconds, &completed_count, &successful_count);
+  format_stats_window_body(total_seconds, longest_seconds, completed_count, successful_count);
   text_layer_set_text(s_stats_body_layer, s_stats_body_text);
 }
 
@@ -1094,6 +1145,34 @@ static bool debug_controls_available(void) {
 #endif
 }
 
+static TextLayer *create_text_layer(GRect frame, GTextAlignment alignment,
+                                    const char *font_key, GColor text_color,
+                                    GColor background_color, bool wrap_text) {
+  TextLayer *text_layer = text_layer_create(frame);
+  text_layer_set_background_color(text_layer, background_color);
+  text_layer_set_text_color(text_layer, text_color);
+  text_layer_set_text_alignment(text_layer, alignment);
+  text_layer_set_font(text_layer, fonts_get_system_font(font_key));
+  if (wrap_text) {
+    text_layer_set_overflow_mode(text_layer, GTextOverflowModeWordWrap);
+  }
+  return text_layer;
+}
+
+static void add_text_layer(Layer *window_layer, TextLayer *text_layer) {
+  layer_add_child(window_layer, text_layer_get_layer(text_layer));
+}
+
+static Window *create_window_with_handlers(WindowHandlers handlers,
+                                           ClickConfigProvider click_provider) {
+  Window *window = window_create();
+  if (click_provider) {
+    window_set_click_config_provider(window, click_provider);
+  }
+  window_set_window_handlers(window, handlers);
+  return window;
+}
+
 static void set_science_content(void) {
   snprintf(s_science_timeline_text, sizeof(s_science_timeline_text),
            "0h Fed  4h insulin drop\n"
@@ -1365,49 +1444,7 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
   }
 }
 
-static void refresh_timer_view(void) {
-  if (!s_title_layer || !s_timer_layer || !s_detail_layer || !s_stage_layer || !s_hint_layer) {
-    return;
-  }
-
-  if (!fast_is_running()) {
-    snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
-    format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
-    snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
-             global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
-    snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: -- [DEV]" : "Stage: --");
-    text_layer_set_text(s_hint_layer, "SELECT Start\nDOWN Menu");
-  } else {
-    time_t elapsed = fastforge_now() - current_fast.start_time;
-    if (elapsed < 0) {
-      elapsed = 0;
-    }
-    update_max_stage_if_needed(elapsed);
-    uint32_t target_seconds = current_fast.target_minutes * 60;
-    if (target_seconds > 0) {
-      time_t remaining = (time_t)target_seconds - elapsed;
-      if (remaining > 0) {
-        snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
-        format_hhmmss(remaining, s_timer_text, sizeof(s_timer_text));
-      } else {
-        snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
-        format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
-      }
-      char elapsed_text[16];
-      format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
-      snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
-               elapsed_text, streak_data.current_streak, streak_data.longest_streak);
-    } else {
-      snprintf(s_title_text, sizeof(s_title_text), "ELAPSED");
-      format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
-      snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
-               streak_data.current_streak, streak_data.longest_streak);
-    }
-    snprintf(s_stage_text, sizeof(s_stage_text), debug_controls_available() ? "Stage: %s [DEV]" : "Stage: %s",
-             stage_text_for_elapsed(elapsed));
-    text_layer_set_text(s_hint_layer, "UP Edit  SEL Stop\nDOWN Menu");
-  }
-
+static void refresh_timer_view_layers(void) {
   text_layer_set_text(s_title_layer, s_title_text);
   text_layer_set_text(s_timer_layer, s_timer_text);
   text_layer_set_text(s_detail_layer, s_detail_text);
@@ -1415,6 +1452,69 @@ static void refresh_timer_view(void) {
   if (s_progress_layer) {
     layer_mark_dirty(s_progress_layer);
   }
+}
+
+static void refresh_timer_view_idle(void) {
+  snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
+  format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+  snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
+           global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
+  snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
+  if (debug_controls_available()) {
+    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: -- [DEV]");
+  }
+  text_layer_set_text(s_hint_layer, "SELECT Start\nDOWN Menu");
+}
+
+static void refresh_timer_view_running(time_t elapsed) {
+  update_max_stage_if_needed(elapsed);
+  uint32_t target_seconds = current_fast.target_minutes * 60;
+  if (target_seconds > 0) {
+    time_t remaining = (time_t)target_seconds - elapsed;
+    if (remaining > 0) {
+      snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
+      format_hhmmss(remaining, s_timer_text, sizeof(s_timer_text));
+    } else {
+      snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
+      format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+    }
+    char elapsed_text[16];
+    format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
+    snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
+             elapsed_text, streak_data.current_streak, streak_data.longest_streak);
+  } else {
+    snprintf(s_title_text, sizeof(s_title_text), "ELAPSED");
+    format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
+    snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
+             streak_data.current_streak, streak_data.longest_streak);
+  }
+
+  if (debug_controls_available()) {
+    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s [DEV]",
+             stage_text_for_elapsed(elapsed));
+  } else {
+    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s",
+             stage_text_for_elapsed(elapsed));
+  }
+  text_layer_set_text(s_hint_layer, "UP Edit  SEL Stop\nDOWN Menu");
+}
+
+static void refresh_timer_view(void) {
+  if (!s_title_layer || !s_timer_layer || !s_detail_layer || !s_stage_layer || !s_hint_layer) {
+    return;
+  }
+
+  if (!fast_is_running()) {
+    refresh_timer_view_idle();
+  } else {
+    time_t elapsed = fastforge_now() - current_fast.start_time;
+    if (elapsed < 0) {
+      elapsed = 0;
+    }
+    refresh_timer_view_running(elapsed);
+  }
+
+  refresh_timer_view_layers();
 }
 
 static void refresh_goal_window_content(void) {
@@ -2160,46 +2260,37 @@ static void timer_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_title_layer = text_layer_create(GRect(0, 4, bounds.size.w, 24));
-  text_layer_set_background_color(s_title_layer, GColorClear);
-  text_layer_set_text_color(s_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_timer_layer = text_layer_create(GRect(0, 28, bounds.size.w, 42));
-  text_layer_set_background_color(s_timer_layer, GColorClear);
-  text_layer_set_text_color(s_timer_layer, GColorBlack);
-  text_layer_set_text_alignment(s_timer_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_timer_layer, fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
-
-  s_detail_layer = text_layer_create(GRect(0, 76, bounds.size.w, 24));
-  text_layer_set_background_color(s_detail_layer, GColorClear);
-  text_layer_set_text_color(s_detail_layer, GColorBlack);
-  text_layer_set_text_alignment(s_detail_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_detail_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  s_title_layer = create_text_layer(GRect(0, 4, bounds.size.w, 24),
+                                    GTextAlignmentCenter,
+                                    FONT_KEY_GOTHIC_18_BOLD,
+                                    GColorBlack, GColorClear, false);
+  s_timer_layer = create_text_layer(GRect(0, 28, bounds.size.w, 42),
+                                    GTextAlignmentCenter,
+                                    FONT_KEY_BITHAM_34_MEDIUM_NUMBERS,
+                                    GColorBlack, GColorClear, false);
+  s_detail_layer = create_text_layer(GRect(0, 76, bounds.size.w, 24),
+                                     GTextAlignmentCenter,
+                                     FONT_KEY_GOTHIC_18,
+                                     GColorBlack, GColorClear, false);
 
   s_progress_layer = layer_create(GRect(10, 104, bounds.size.w - 20, 12));
   layer_set_update_proc(s_progress_layer, timer_progress_update_proc);
 
-  s_stage_layer = text_layer_create(GRect(0, 118, bounds.size.w, 20));
-  text_layer_set_background_color(s_stage_layer, GColorClear);
-  text_layer_set_text_color(s_stage_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stage_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_stage_layer = create_text_layer(GRect(0, 118, bounds.size.w, 20),
+                                    GTextAlignmentCenter,
+                                    FONT_KEY_GOTHIC_18_BOLD,
+                                    GColorBlack, GColorClear, false);
+  s_hint_layer = create_text_layer(GRect(0, 138, bounds.size.w, 28),
+                                   GTextAlignmentCenter,
+                                   FONT_KEY_GOTHIC_14,
+                                   GColorBlack, GColorClear, true);
 
-  s_hint_layer = text_layer_create(GRect(0, 138, bounds.size.w, 28));
-  text_layer_set_background_color(s_hint_layer, GColorClear);
-  text_layer_set_text_color(s_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(s_hint_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-
-  layer_add_child(window_layer, text_layer_get_layer(s_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_timer_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_detail_layer));
+  add_text_layer(window_layer, s_title_layer);
+  add_text_layer(window_layer, s_timer_layer);
+  add_text_layer(window_layer, s_detail_layer);
   layer_add_child(window_layer, s_progress_layer);
-  layer_add_child(window_layer, text_layer_get_layer(s_stage_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_hint_layer));
+  add_text_layer(window_layer, s_stage_layer);
+  add_text_layer(window_layer, s_hint_layer);
   refresh_timer_view();
 }
 
@@ -2228,38 +2319,34 @@ static void goal_window_load(Window *window) {
   layer_set_update_proc(s_goal_background_layer, goal_background_update_proc);
   layer_add_child(window_layer, s_goal_background_layer);
 
-  s_goal_title_layer = text_layer_create(GRect(0, 20, bounds.size.w, 30));
-  text_layer_set_background_color(s_goal_title_layer, GColorBlack);
-  text_layer_set_text_color(s_goal_title_layer, GColorWhite);
-  text_layer_set_text_alignment(s_goal_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  s_goal_title_layer = create_text_layer(GRect(0, 20, bounds.size.w, 30),
+                                         GTextAlignmentCenter,
+                                         FONT_KEY_GOTHIC_28_BOLD,
+                                         GColorWhite, GColorBlack, false);
   text_layer_set_text(s_goal_title_layer, "GOAL HIT");
 
-  s_goal_time_layer = text_layer_create(GRect(0, 56, bounds.size.w, 26));
-  text_layer_set_background_color(s_goal_time_layer, GColorBlack);
-  text_layer_set_text_color(s_goal_time_layer, GColorWhite);
-  text_layer_set_text_alignment(s_goal_time_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_time_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_goal_time_layer = create_text_layer(GRect(0, 56, bounds.size.w, 26),
+                                        GTextAlignmentCenter,
+                                        FONT_KEY_GOTHIC_24_BOLD,
+                                        GColorWhite, GColorBlack, false);
   text_layer_set_text(s_goal_time_layer, "Elapsed 00:00:00");
 
-  s_goal_stage_layer = text_layer_create(GRect(0, 84, bounds.size.w, 24));
-  text_layer_set_background_color(s_goal_stage_layer, GColorBlack);
-  text_layer_set_text_color(s_goal_stage_layer, GColorWhite);
-  text_layer_set_text_alignment(s_goal_stage_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_goal_stage_layer = create_text_layer(GRect(0, 84, bounds.size.w, 24),
+                                         GTextAlignmentCenter,
+                                         FONT_KEY_GOTHIC_18_BOLD,
+                                         GColorWhite, GColorBlack, false);
   text_layer_set_text(s_goal_stage_layer, "Stage: --");
 
-  s_goal_hint_layer = text_layer_create(GRect(0, 120, bounds.size.w, 42));
-  text_layer_set_background_color(s_goal_hint_layer, GColorBlack);
-  text_layer_set_text_color(s_goal_hint_layer, GColorWhite);
-  text_layer_set_text_alignment(s_goal_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_goal_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  s_goal_hint_layer = create_text_layer(GRect(0, 120, bounds.size.w, 42),
+                                        GTextAlignmentCenter,
+                                        FONT_KEY_GOTHIC_14_BOLD,
+                                        GColorWhite, GColorBlack, true);
   text_layer_set_text(s_goal_hint_layer, "SELECT Stop\nDOWN Continue");
 
-  layer_add_child(window_layer, text_layer_get_layer(s_goal_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_goal_time_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_goal_stage_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_goal_hint_layer));
+  add_text_layer(window_layer, s_goal_title_layer);
+  add_text_layer(window_layer, s_goal_time_layer);
+  add_text_layer(window_layer, s_goal_stage_layer);
+  add_text_layer(window_layer, s_goal_hint_layer);
   refresh_goal_window_content();
 }
 
@@ -2324,48 +2411,37 @@ static void history_edit_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_history_edit_title_layer = text_layer_create(GRect(4, 4, bounds.size.w - 8, 24));
-  text_layer_set_background_color(s_history_edit_title_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_history_edit_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_history_edit_title_layer = create_text_layer(GRect(4, 4, bounds.size.w - 8, 24),
+                                                 GTextAlignmentCenter,
+                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 GColorBlack, GColorClear, false);
+  s_history_edit_start_layer = create_text_layer(GRect(6, 30, bounds.size.w - 12, 22),
+                                                 GTextAlignmentLeft,
+                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 GColorBlack, GColorClear, false);
+  s_history_edit_end_layer = create_text_layer(GRect(6, 54, bounds.size.w - 12, 22),
+                                               GTextAlignmentLeft,
+                                               FONT_KEY_GOTHIC_18_BOLD,
+                                               GColorBlack, GColorClear, false);
+  s_history_edit_duration_layer = create_text_layer(GRect(6, 82, bounds.size.w - 12, 22),
+                                                    GTextAlignmentLeft,
+                                                    FONT_KEY_GOTHIC_18_BOLD,
+                                                    GColorBlack, GColorClear, false);
+  s_history_edit_stage_layer = create_text_layer(GRect(6, 106, bounds.size.w - 12, 22),
+                                                 GTextAlignmentLeft,
+                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 GColorBlack, GColorClear, false);
+  s_history_edit_hint_layer = create_text_layer(GRect(4, 130, bounds.size.w - 8, 34),
+                                                GTextAlignmentCenter,
+                                                FONT_KEY_GOTHIC_14,
+                                                GColorBlack, GColorClear, false);
 
-  s_history_edit_start_layer = text_layer_create(GRect(6, 30, bounds.size.w - 12, 22));
-  text_layer_set_background_color(s_history_edit_start_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_start_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_start_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_history_edit_start_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_history_edit_end_layer = text_layer_create(GRect(6, 54, bounds.size.w - 12, 22));
-  text_layer_set_background_color(s_history_edit_end_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_end_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_end_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_history_edit_end_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_history_edit_duration_layer = text_layer_create(GRect(6, 82, bounds.size.w - 12, 22));
-  text_layer_set_background_color(s_history_edit_duration_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_duration_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_duration_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_history_edit_duration_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_history_edit_stage_layer = text_layer_create(GRect(6, 106, bounds.size.w - 12, 22));
-  text_layer_set_background_color(s_history_edit_stage_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_stage_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_stage_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_history_edit_stage_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_history_edit_hint_layer = text_layer_create(GRect(4, 130, bounds.size.w - 8, 34));
-  text_layer_set_background_color(s_history_edit_hint_layer, GColorClear);
-  text_layer_set_text_color(s_history_edit_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_history_edit_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_history_edit_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_start_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_end_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_duration_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_stage_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_history_edit_hint_layer));
+  add_text_layer(window_layer, s_history_edit_title_layer);
+  add_text_layer(window_layer, s_history_edit_start_layer);
+  add_text_layer(window_layer, s_history_edit_end_layer);
+  add_text_layer(window_layer, s_history_edit_duration_layer);
+  add_text_layer(window_layer, s_history_edit_stage_layer);
+  add_text_layer(window_layer, s_history_edit_hint_layer);
   refresh_history_edit_window_content();
 }
 
@@ -2394,41 +2470,32 @@ static void running_edit_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_running_edit_title_layer = text_layer_create(GRect(4, 4, bounds.size.w - 8, 26));
-  text_layer_set_background_color(s_running_edit_title_layer, GColorClear);
-  text_layer_set_text_color(s_running_edit_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_running_edit_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_running_edit_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_running_edit_title_layer = create_text_layer(GRect(4, 4, bounds.size.w, 26),
+                                                 GTextAlignmentCenter,
+                                                 FONT_KEY_GOTHIC_24_BOLD,
+                                                 GColorBlack, GColorClear, false);
+  s_running_edit_start_layer = create_text_layer(GRect(6, 36, bounds.size.w - 12, 24),
+                                                 GTextAlignmentLeft,
+                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 GColorBlack, GColorClear, false);
+  s_running_edit_elapsed_layer = create_text_layer(GRect(6, 62, bounds.size.w - 12, 24),
+                                                    GTextAlignmentLeft,
+                                                    FONT_KEY_GOTHIC_18_BOLD,
+                                                    GColorBlack, GColorClear, false);
+  s_running_edit_goal_layer = create_text_layer(GRect(6, 88, bounds.size.w - 12, 34),
+                                                GTextAlignmentLeft,
+                                                FONT_KEY_GOTHIC_18,
+                                                GColorBlack, GColorClear, false);
+  s_running_edit_hint_layer = create_text_layer(GRect(4, 124, bounds.size.w - 8, 40),
+                                                GTextAlignmentCenter,
+                                                FONT_KEY_GOTHIC_14,
+                                                GColorBlack, GColorClear, false);
 
-  s_running_edit_start_layer = text_layer_create(GRect(6, 36, bounds.size.w - 12, 24));
-  text_layer_set_background_color(s_running_edit_start_layer, GColorClear);
-  text_layer_set_text_color(s_running_edit_start_layer, GColorBlack);
-  text_layer_set_text_alignment(s_running_edit_start_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_running_edit_start_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_running_edit_elapsed_layer = text_layer_create(GRect(6, 62, bounds.size.w - 12, 24));
-  text_layer_set_background_color(s_running_edit_elapsed_layer, GColorClear);
-  text_layer_set_text_color(s_running_edit_elapsed_layer, GColorBlack);
-  text_layer_set_text_alignment(s_running_edit_elapsed_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_running_edit_elapsed_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-
-  s_running_edit_goal_layer = text_layer_create(GRect(6, 88, bounds.size.w - 12, 34));
-  text_layer_set_background_color(s_running_edit_goal_layer, GColorClear);
-  text_layer_set_text_color(s_running_edit_goal_layer, GColorBlack);
-  text_layer_set_text_alignment(s_running_edit_goal_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_running_edit_goal_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-
-  s_running_edit_hint_layer = text_layer_create(GRect(4, 124, bounds.size.w - 8, 40));
-  text_layer_set_background_color(s_running_edit_hint_layer, GColorClear);
-  text_layer_set_text_color(s_running_edit_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_running_edit_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_running_edit_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-
-  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_start_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_elapsed_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_goal_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_running_edit_hint_layer));
+  add_text_layer(window_layer, s_running_edit_title_layer);
+  add_text_layer(window_layer, s_running_edit_start_layer);
+  add_text_layer(window_layer, s_running_edit_elapsed_layer);
+  add_text_layer(window_layer, s_running_edit_goal_layer);
+  add_text_layer(window_layer, s_running_edit_hint_layer);
   refresh_running_edit_window_content();
 }
 
@@ -2455,29 +2522,26 @@ static void stats_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_stats_title_layer = text_layer_create(GRect(4, 8, bounds.size.w - 8, 26));
-  text_layer_set_background_color(s_stats_title_layer, GColorClear);
-  text_layer_set_text_color(s_stats_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_stats_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_stats_title_layer = create_text_layer(GRect(4, 8, bounds.size.w - 8, 26),
+                                          GTextAlignmentCenter,
+                                          FONT_KEY_GOTHIC_24_BOLD,
+                                          GColorBlack, GColorClear, false);
   text_layer_set_text(s_stats_title_layer, "STATISTICS");
 
-  s_stats_body_layer = text_layer_create(GRect(6, 40, bounds.size.w - 12, 98));
-  text_layer_set_background_color(s_stats_body_layer, GColorClear);
-  text_layer_set_text_color(s_stats_body_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_body_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_stats_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_stats_body_layer = create_text_layer(GRect(6, 40, bounds.size.w - 12, 98),
+                                         GTextAlignmentLeft,
+                                         FONT_KEY_GOTHIC_18_BOLD,
+                                         GColorBlack, GColorClear, false);
 
-  s_stats_hint_layer = text_layer_create(GRect(4, 140, bounds.size.w - 8, 24));
-  text_layer_set_background_color(s_stats_hint_layer, GColorClear);
-  text_layer_set_text_color(s_stats_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_stats_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  s_stats_hint_layer = create_text_layer(GRect(4, 140, bounds.size.w - 8, 24),
+                                         GTextAlignmentCenter,
+                                         FONT_KEY_GOTHIC_14_BOLD,
+                                         GColorBlack, GColorClear, false);
   text_layer_set_text(s_stats_hint_layer, "BACK Menu");
 
-  layer_add_child(window_layer, text_layer_get_layer(s_stats_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_stats_body_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_stats_hint_layer));
+  add_text_layer(window_layer, s_stats_title_layer);
+  add_text_layer(window_layer, s_stats_body_layer);
+  add_text_layer(window_layer, s_stats_hint_layer);
   refresh_stats_window_content();
 }
 
@@ -2500,38 +2564,31 @@ static void science_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_science_title_layer = text_layer_create(GRect(0, 4, bounds.size.w, 24));
-  text_layer_set_background_color(s_science_title_layer, GColorClear);
-  text_layer_set_text_color(s_science_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_science_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_science_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_science_title_layer = create_text_layer(GRect(0, 4, bounds.size.w, 24),
+                                            GTextAlignmentCenter,
+                                            FONT_KEY_GOTHIC_24_BOLD,
+                                            GColorBlack, GColorClear, false);
   text_layer_set_text(s_science_title_layer, "FASTING SCIENCE");
 
-  s_science_timeline_layer = text_layer_create(GRect(4, 28, bounds.size.w - 8, 56));
-  text_layer_set_background_color(s_science_timeline_layer, GColorClear);
-  text_layer_set_text_color(s_science_timeline_layer, GColorBlack);
-  text_layer_set_text_alignment(s_science_timeline_layer, GTextAlignmentLeft);
-  text_layer_set_overflow_mode(s_science_timeline_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_science_timeline_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  s_science_timeline_layer = create_text_layer(GRect(4, 28, bounds.size.w - 8, 56),
+                                               GTextAlignmentLeft,
+                                               FONT_KEY_GOTHIC_14,
+                                               GColorBlack, GColorClear, true);
 
-  s_science_showdown_layer = text_layer_create(GRect(4, 84, bounds.size.w - 8, 54));
-  text_layer_set_background_color(s_science_showdown_layer, GColorClear);
-  text_layer_set_text_color(s_science_showdown_layer, GColorBlack);
-  text_layer_set_text_alignment(s_science_showdown_layer, GTextAlignmentLeft);
-  text_layer_set_overflow_mode(s_science_showdown_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_science_showdown_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  s_science_showdown_layer = create_text_layer(GRect(4, 84, bounds.size.w - 8, 54),
+                                               GTextAlignmentLeft,
+                                               FONT_KEY_GOTHIC_14_BOLD,
+                                               GColorBlack, GColorClear, true);
 
-  s_science_hint_layer = text_layer_create(GRect(0, 140, bounds.size.w, 28));
-  text_layer_set_background_color(s_science_hint_layer, GColorClear);
-  text_layer_set_text_color(s_science_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_science_hint_layer, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(s_science_hint_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_science_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  s_science_hint_layer = create_text_layer(GRect(0, 140, bounds.size.w, 28),
+                                           GTextAlignmentCenter,
+                                           FONT_KEY_GOTHIC_14_BOLD,
+                                           GColorBlack, GColorClear, true);
 
-  layer_add_child(window_layer, text_layer_get_layer(s_science_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_science_timeline_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_science_showdown_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_science_hint_layer));
+  add_text_layer(window_layer, s_science_title_layer);
+  add_text_layer(window_layer, s_science_timeline_layer);
+  add_text_layer(window_layer, s_science_showdown_layer);
+  add_text_layer(window_layer, s_science_hint_layer);
   refresh_science_window_content();
 }
 
@@ -2556,40 +2613,35 @@ static void settings_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_settings_title_layer = text_layer_create(GRect(0, 6, bounds.size.w, 26));
-  text_layer_set_background_color(s_settings_title_layer, GColorClear);
-  text_layer_set_text_color(s_settings_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_settings_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_settings_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_settings_title_layer = create_text_layer(GRect(0, 6, bounds.size.w, 26),
+                                             GTextAlignmentCenter,
+                                             FONT_KEY_GOTHIC_24_BOLD,
+                                             GColorBlack, GColorClear, false);
   text_layer_set_text(s_settings_title_layer, "SETTINGS");
 
-  s_settings_target_layer = text_layer_create(GRect(6, 42, bounds.size.w - 12, 24));
-  text_layer_set_background_color(s_settings_target_layer, GColorClear);
-  text_layer_set_text_color(s_settings_target_layer, GColorBlack);
-  text_layer_set_text_alignment(s_settings_target_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_settings_target_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  s_settings_target_layer = create_text_layer(GRect(6, 42, bounds.size.w - 12, 24),
+                                              GTextAlignmentCenter,
+                                              FONT_KEY_GOTHIC_18_BOLD,
+                                              GColorBlack, GColorClear, false);
 
-  s_settings_hint_layer = text_layer_create(GRect(6, 94, bounds.size.w - 12, 54));
-  text_layer_set_background_color(s_settings_hint_layer, GColorClear);
-  text_layer_set_text_color(s_settings_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_settings_hint_layer, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(s_settings_hint_layer, GTextOverflowModeWordWrap);
-  text_layer_set_font(s_settings_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  s_settings_hint_layer = create_text_layer(GRect(6, 94, bounds.size.w - 12, 54),
+                                            GTextAlignmentCenter,
+                                            FONT_KEY_GOTHIC_14,
+                                            GColorBlack, GColorClear, true);
 
 #ifdef DEBUG
-  s_settings_dev_layer = text_layer_create(GRect(6, 76, bounds.size.w - 12, 18));
-  text_layer_set_background_color(s_settings_dev_layer, GColorClear);
-  text_layer_set_text_color(s_settings_dev_layer, GColorBlack);
-  text_layer_set_text_alignment(s_settings_dev_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_settings_dev_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  s_settings_dev_layer = create_text_layer(GRect(6, 76, bounds.size.w - 12, 18),
+                                           GTextAlignmentCenter,
+                                           FONT_KEY_GOTHIC_14_BOLD,
+                                           GColorBlack, GColorClear, false);
 #endif
 
-  layer_add_child(window_layer, text_layer_get_layer(s_settings_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_settings_target_layer));
+  add_text_layer(window_layer, s_settings_title_layer);
+  add_text_layer(window_layer, s_settings_target_layer);
 #ifdef DEBUG
-  layer_add_child(window_layer, text_layer_get_layer(s_settings_dev_layer));
+  add_text_layer(window_layer, s_settings_dev_layer);
 #endif
-  layer_add_child(window_layer, text_layer_get_layer(s_settings_hint_layer));
+  add_text_layer(window_layer, s_settings_hint_layer);
   refresh_settings_window_content();
 }
 
@@ -2616,27 +2668,22 @@ static void detail_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  s_placeholder_title_layer = text_layer_create(GRect(4, 8, bounds.size.w - 8, 26));
-  text_layer_set_background_color(s_placeholder_title_layer, GColorClear);
-  text_layer_set_text_color(s_placeholder_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_placeholder_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_placeholder_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_placeholder_title_layer = create_text_layer(GRect(4, 8, bounds.size.w - 8, 26),
+                                                GTextAlignmentCenter,
+                                                FONT_KEY_GOTHIC_24_BOLD,
+                                                GColorBlack, GColorClear, false);
+  s_placeholder_body_layer = create_text_layer(GRect(6, 40, bounds.size.w - 12, 98),
+                                               GTextAlignmentCenter,
+                                               FONT_KEY_GOTHIC_18,
+                                               GColorBlack, GColorClear, false);
+  s_placeholder_hint_layer = create_text_layer(GRect(4, 140, bounds.size.w - 8, 24),
+                                               GTextAlignmentCenter,
+                                               FONT_KEY_GOTHIC_14_BOLD,
+                                               GColorBlack, GColorClear, false);
 
-  s_placeholder_body_layer = text_layer_create(GRect(6, 40, bounds.size.w - 12, 98));
-  text_layer_set_background_color(s_placeholder_body_layer, GColorClear);
-  text_layer_set_text_color(s_placeholder_body_layer, GColorBlack);
-  text_layer_set_text_alignment(s_placeholder_body_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_placeholder_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-
-  s_placeholder_hint_layer = text_layer_create(GRect(4, 140, bounds.size.w - 8, 24));
-  text_layer_set_background_color(s_placeholder_hint_layer, GColorClear);
-  text_layer_set_text_color(s_placeholder_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_placeholder_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_placeholder_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
-
-  layer_add_child(window_layer, text_layer_get_layer(s_placeholder_title_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_placeholder_body_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_placeholder_hint_layer));
+  add_text_layer(window_layer, s_placeholder_title_layer);
+  add_text_layer(window_layer, s_placeholder_body_layer);
+  add_text_layer(window_layer, s_placeholder_hint_layer);
   set_placeholder_content(s_placeholder_title_text, s_placeholder_body_text, s_placeholder_hint_text);
 }
 
@@ -2753,96 +2800,91 @@ static void configure_preset_items(void) {
   };
 }
 
-static void init_windows(void) {
-  s_menu_window = window_create();
-  window_set_window_handlers(s_menu_window, (WindowHandlers) {
+static void init_primary_windows(void) {
+  s_menu_window = create_window_with_handlers((WindowHandlers) {
     .load = menu_window_load,
     .appear = menu_window_appear,
     .unload = menu_window_unload
-  });
+  }, NULL);
 
-  s_timer_window = window_create();
-  window_set_click_config_provider(s_timer_window, timer_click_config_provider);
-  window_set_window_handlers(s_timer_window, (WindowHandlers) {
+  s_timer_window = create_window_with_handlers((WindowHandlers) {
     .load = timer_window_load,
     .unload = timer_window_unload
-  });
+  }, timer_click_config_provider);
 
-  s_goal_window = window_create();
-  window_set_background_color(s_goal_window, GColorBlack);
-  window_set_click_config_provider(s_goal_window, goal_click_config_provider);
-  window_set_window_handlers(s_goal_window, (WindowHandlers) {
+  s_goal_window = create_window_with_handlers((WindowHandlers) {
     .load = goal_window_load,
     .unload = goal_window_unload
-  });
+  }, goal_click_config_provider);
+  window_set_background_color(s_goal_window, GColorBlack);
 
-  s_presets_window = window_create();
-  window_set_window_handlers(s_presets_window, (WindowHandlers) {
+  s_presets_window = create_window_with_handlers((WindowHandlers) {
     .load = presets_window_load,
     .unload = presets_window_unload
-  });
+  }, NULL);
+}
 
-  s_history_window = window_create();
-  window_set_window_handlers(s_history_window, (WindowHandlers) {
+static void init_history_windows(void) {
+  s_history_window = create_window_with_handlers((WindowHandlers) {
     .load = history_window_load,
     .appear = history_window_appear,
     .unload = history_window_unload
-  });
+  }, NULL);
 
-  s_history_edit_window = window_create();
-  window_set_click_config_provider(s_history_edit_window, history_edit_click_config_provider);
-  window_set_window_handlers(s_history_edit_window, (WindowHandlers) {
+  s_history_edit_window = create_window_with_handlers((WindowHandlers) {
     .load = history_edit_window_load,
     .appear = history_edit_window_appear,
     .unload = history_edit_window_unload
-  });
+  }, history_edit_click_config_provider);
 
-  s_running_edit_window = window_create();
-  window_set_click_config_provider(s_running_edit_window, running_edit_click_config_provider);
-  window_set_window_handlers(s_running_edit_window, (WindowHandlers) {
+  s_running_edit_window = create_window_with_handlers((WindowHandlers) {
     .load = running_edit_window_load,
     .appear = running_edit_window_appear,
     .unload = running_edit_window_unload
-  });
+  }, running_edit_click_config_provider);
+}
 
-  s_stats_window = window_create();
-  window_set_window_handlers(s_stats_window, (WindowHandlers) {
+static void init_info_windows(void) {
+  s_stats_window = create_window_with_handlers((WindowHandlers) {
     .load = stats_window_load,
     .appear = stats_window_appear,
     .unload = stats_window_unload
-  });
+  }, NULL);
 
-  s_science_window = window_create();
-  window_set_click_config_provider(s_science_window, science_click_config_provider);
-  window_set_window_handlers(s_science_window, (WindowHandlers) {
+  s_science_window = create_window_with_handlers((WindowHandlers) {
     .load = science_window_load,
     .appear = science_window_appear,
     .unload = science_window_unload
-  });
+  }, science_click_config_provider);
 
-  s_settings_window = window_create();
-  window_set_click_config_provider(s_settings_window, settings_click_config_provider);
-  window_set_window_handlers(s_settings_window, (WindowHandlers) {
+  s_settings_window = create_window_with_handlers((WindowHandlers) {
     .load = settings_window_load,
     .appear = settings_window_appear,
     .unload = settings_window_unload
-  });
+  }, settings_click_config_provider);
+  s_detail_window = create_window_with_handlers((WindowHandlers) {
+    .load = detail_window_load,
+    .unload = detail_window_unload
+  }, placeholder_click_config_provider);
+}
 
 #ifdef DEBUG
-  s_debug_window = window_create();
-  window_set_window_handlers(s_debug_window, (WindowHandlers) {
+static void init_debug_window(void) {
+  s_debug_window = create_window_with_handlers((WindowHandlers) {
     .load = debug_window_load,
     .appear = debug_window_appear,
     .unload = debug_window_unload
-  });
+  }, NULL);
+}
 #endif
 
-  s_detail_window = window_create();
-  window_set_click_config_provider(s_detail_window, placeholder_click_config_provider);
-  window_set_window_handlers(s_detail_window, (WindowHandlers) {
-    .load = detail_window_load,
-    .unload = detail_window_unload
-  });
+static void init_windows(void) {
+  init_primary_windows();
+  init_history_windows();
+  init_info_windows();
+#ifdef DEBUG
+  init_debug_window();
+#endif
 }
 
 static void destroy_windows(void) {

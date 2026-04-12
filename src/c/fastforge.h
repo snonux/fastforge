@@ -3,6 +3,7 @@
 
 #include <pebble.h>
 
+/* Persisted fast record shared by the running state and history list. */
 typedef struct {
   time_t start_time;
   time_t end_time;           // 0 = currently running
@@ -11,6 +12,7 @@ typedef struct {
   uint8_t max_stage_reached; // 0=none, 1=12h, 2=18h, 3=24h+
 } FastEntry;
 
+/* Derived streak counters rebuilt from completed fast end dates. */
 typedef struct {
   uint16_t current_streak;
   uint16_t longest_streak;
