@@ -2,6 +2,7 @@
 #define FASTFORGE_INTERNAL_H
 
 #include "fastforge.h"
+#include "fastforge_logic.h"
 
 extern bool s_fake_time_enabled;
 extern int32_t s_fake_time_offset_seconds;
@@ -14,13 +15,8 @@ void recompute_streak_data_for_today(void);
 bool refresh_streak_if_day_changed(void);
 void update_max_stage_if_needed(time_t elapsed_seconds);
 void schedule_alarm_if_needed(void);
-time_t entry_duration_seconds(const FastEntry *entry);
-void format_hhmmss(time_t seconds, char *buffer, size_t size);
-void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size);
+bool running_current_fast_is_at_target(time_t now);
 void format_entry_datetime(time_t timestamp, char *buffer, size_t size);
-uint8_t stage_level_for_elapsed(time_t elapsed_seconds);
-const char *stage_text_for_elapsed(time_t elapsed_seconds);
-bool running_fast_is_at_target(time_t now);
 void sort_history_by_end_time(void);
 int history_index_for_row(int row);
 const char *milestone_badge_label_for_level(uint8_t stage_level);

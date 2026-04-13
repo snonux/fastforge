@@ -968,7 +968,7 @@ static void running_fast_edit_apply_delta_minutes(int delta_minutes) {
   current_fast.max_stage_reached = stage_level_for_elapsed(elapsed);
   save_all_data();
   schedule_alarm_if_needed();
-  if (!running_fast_is_at_target(now) && window_stack_contains_window(s_goal_window)) {
+  if (!running_current_fast_is_at_target(now) && window_stack_contains_window(s_goal_window)) {
     window_stack_remove(s_goal_window, false);
   }
   refresh_all_ui_state();
