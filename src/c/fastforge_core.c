@@ -61,24 +61,6 @@ static int compare_time_t_ascending(const void *a, const void *b) {
   return 0;
 }
 
-time_t fastforge_local_day_start_platform(time_t timestamp) {
-  if (timestamp <= 0) {
-    return 0;
-  }
-
-  struct tm *tm_info = localtime(&timestamp);
-  if (!tm_info) {
-    return 0;
-  }
-
-  struct tm tm_copy = *tm_info;
-  tm_copy.tm_hour = 0;
-  tm_copy.tm_min = 0;
-  tm_copy.tm_sec = 0;
-  tm_copy.tm_isdst = -1;
-  return mktime(&tm_copy);
-}
-
 static bool is_next_local_day(time_t first_day, time_t second_day) {
   if (first_day <= 0 || second_day <= 0 || second_day < first_day) {
     return false;

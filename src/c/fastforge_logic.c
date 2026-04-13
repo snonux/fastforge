@@ -1,6 +1,15 @@
 #include "fastforge_logic.h"
 
 #include <stdio.h>
+#ifdef _TIME_H_
+#undef _TIME_H_
+#endif
+#ifndef __time_t_defined
+#define __time_t_defined
+#endif
+#ifndef _TIME_T_DECLARED
+#define _TIME_T_DECLARED
+#endif
 #include <time.h>
 
 
@@ -56,14 +65,22 @@ void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
   snprintf(buffer, size, "%dh %02dm", hours, minutes);
 }
 
-time_t fastforge_local_day_start_platform(time_t timestamp);
-
 time_t local_day_start(time_t timestamp) {
   if (timestamp <= 0) {
     return 0;
   }
 
-  return fastforge_local_day_start_platform(timestamp);
+  struct tm *tm_info = localtime(&timestamp);
+  if (!tm_info) {
+    return 0;
+  }
+
+  struct tm tm_copy = *tm_info;
+  tm_copy.tm_hour = 0;
+  tm_copy.tm_min = 0;
+  tm_copy.tm_sec = 0;
+  tm_copy.tm_isdst = -1;
+  return mktime(&tm_copy);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
