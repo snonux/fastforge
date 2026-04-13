@@ -3,6 +3,25 @@
 #include <stdio.h>
 #include <time.h>
 
+#ifndef __struct_tm_defined
+#define FASTFORGE_TZ_LEN 6
+struct tm {
+  int tm_sec;
+  int tm_min;
+  int tm_hour;
+  int tm_mday;
+  int tm_mon;
+  int tm_year;
+  int tm_wday;
+  int tm_yday;
+  int tm_isdst;
+  int tm_gmtoff;
+  char tm_zone[FASTFORGE_TZ_LEN];
+};
+#endif
+struct tm *localtime(const time_t *timep);
+time_t mktime(struct tm *tb);
+
 time_t entry_duration_seconds(const FastEntry *entry) {
   if (!entry || entry->start_time == 0 || entry->end_time <= entry->start_time) {
     return 0;
@@ -53,6 +72,24 @@ void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
   int hours = (int)(seconds / 3600);
   int minutes = (int)((seconds % 3600) / 60);
   snprintf(buffer, size, "%dh %02dm", hours, minutes);
+}
+
+time_t local_day_start(time_t timestamp) {
+  if (timestamp <= 0) {
+    return 0;
+  }
+
+  struct tm *tm_info = localtime(&timestamp);
+  if (!tm_info) {
+    return 0;
+  }
+
+  struct tm tm_copy = *tm_info;
+  tm_copy.tm_hour = 0;
+  tm_copy.tm_min = 0;
+  tm_copy.tm_sec = 0;
+  tm_copy.tm_isdst = -1;
+  return mktime(&tm_copy);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
