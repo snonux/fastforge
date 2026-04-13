@@ -10,7 +10,7 @@ typedef time_t ff_sys_time_t;
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
+#include <stdint.h>
 
 
 time_t entry_duration_seconds(const FastEntry *entry) {
