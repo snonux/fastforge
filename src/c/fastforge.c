@@ -2077,6 +2077,11 @@ static void init(void) {
   set_placeholder_content("DETAIL", "FastForge destination placeholder.", "BACK Menu");
   init_windows();
   window_stack_push(s_menu_window, true);
+  /* If a fast is already running, show the timer immediately on launch
+   * so the user lands on the live countdown rather than the main menu. */
+  if (fast_is_running()) {
+    window_stack_push(s_timer_window, false);
+  }
   schedule_alarm_if_needed();
   sync_main_menu_state();
 }
