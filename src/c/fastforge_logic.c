@@ -1,8 +1,12 @@
+#undef _TIME_H_
+#ifdef time_t
+#undef time_t
+#endif
+#include <time.h>
+
 #include "fastforge_logic.h"
 
 #include <stdio.h>
-#include <pebble.h>
-#include <time.h>
 
 
 time_t entry_duration_seconds(const FastEntry *entry) {
