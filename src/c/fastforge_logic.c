@@ -10,6 +10,7 @@ typedef time_t ff_sys_time_t;
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 
 
 time_t entry_duration_seconds(const FastEntry *entry) {
@@ -125,6 +126,10 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
   out->last_completed_fast_end = 0;
 
   if (!entries || count <= 0) {
+    return;
+  }
+
+  if ((size_t)count > SIZE_MAX / sizeof(time_t)) {
     return;
   }
 
