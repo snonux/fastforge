@@ -209,12 +209,13 @@ On phone side (minimal companion app or Rebble tools) receive the data as CSV.
 
 1. Start New Fast → Presets submenu  
 2. Current Timer  
-3. Stop Current Fast (if running)  
-4. History  
-5. Statistics  
-6. Settings  
-7. Backup to Phone  
-8. About  
+3. Stop Current Fast (if running) — saves to history  
+4. Cancel Current Fast (if running) — discards, not saved to history  
+5. History  
+6. Statistics  
+7. Settings  
+8. Backup to Phone  
+9. About  
 
 ---
 

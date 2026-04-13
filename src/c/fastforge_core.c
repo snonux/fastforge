@@ -297,6 +297,26 @@ bool fast_stop(void) {
   return true;
 }
 
+/* Cancel discards the running fast without recording it in history. */
+bool fast_cancel(void) {
+  if (!fast_is_running()) {
+    return false;
+  }
+
+  memset(&current_fast, 0, sizeof(current_fast));
+#ifdef DEBUG
+  s_current_fast_origin_offset_seconds = 0;
+#endif
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+  target_time = 0;
+  save_all_data();
+  APP_LOG(APP_LOG_LEVEL_INFO, "Cancelled fast (not saved to history)");
+  return true;
+}
+
 static void alarm_callback(void *data) {
   (void)data;
   alarm_timer = NULL;

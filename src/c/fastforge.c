@@ -9,12 +9,13 @@ enum {
   MAIN_MENU_INDEX_START_NEW = 0,
   MAIN_MENU_INDEX_CURRENT_TIMER = 1,
   MAIN_MENU_INDEX_STOP_CURRENT = 2,
-  MAIN_MENU_INDEX_HISTORY = 3,
-  MAIN_MENU_INDEX_STATS = 4,
-  MAIN_MENU_INDEX_SETTINGS = 5,
-  MAIN_MENU_INDEX_BACKUP = 6,
-  MAIN_MENU_INDEX_ABOUT = 7,
-  MAIN_MENU_ITEM_COUNT = 8
+  MAIN_MENU_INDEX_CANCEL_CURRENT = 3,
+  MAIN_MENU_INDEX_HISTORY = 4,
+  MAIN_MENU_INDEX_STATS = 5,
+  MAIN_MENU_INDEX_SETTINGS = 6,
+  MAIN_MENU_INDEX_BACKUP = 7,
+  MAIN_MENU_INDEX_ABOUT = 8,
+  MAIN_MENU_ITEM_COUNT = 9
 };
 
 enum {
@@ -96,6 +97,7 @@ static char s_settings_target_text[32];
 static char s_settings_dev_text[32];
 #endif
 static char s_menu_stop_subtitle[32];
+static char s_menu_cancel_subtitle[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
@@ -655,10 +657,13 @@ static void refresh_goal_window_content(void) {
 static void sync_main_menu_state(void) {
   if (fast_is_running()) {
     snprintf(s_menu_stop_subtitle, sizeof(s_menu_stop_subtitle), "End now and save");
+    snprintf(s_menu_cancel_subtitle, sizeof(s_menu_cancel_subtitle), "Discard, no history");
   } else {
     snprintf(s_menu_stop_subtitle, sizeof(s_menu_stop_subtitle), "No fast running");
+    snprintf(s_menu_cancel_subtitle, sizeof(s_menu_cancel_subtitle), "No fast running");
   }
   s_main_menu_items[MAIN_MENU_INDEX_STOP_CURRENT].subtitle = s_menu_stop_subtitle;
+  s_main_menu_items[MAIN_MENU_INDEX_CANCEL_CURRENT].subtitle = s_menu_cancel_subtitle;
 
   if (s_main_menu_layer) {
     menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_main_menu_layer));
@@ -1084,6 +1089,18 @@ static void menu_stop_current_callback(int index, void *context) {
     return;
   }
   show_placeholder_window("FAST STOPPED", "Current fast saved to history.", "BACK Menu");
+  refresh_all_ui_state();
+}
+
+/* Cancel discards the running fast without saving it to history. */
+static void menu_cancel_current_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  if (!fast_cancel()) {
+    show_placeholder_window("NOT RUNNING", "There is no active fast to cancel.", "BACK Menu");
+    return;
+  }
+  show_placeholder_window("FAST CANCELLED", "Fast discarded. Not in history.", "BACK Menu");
   refresh_all_ui_state();
 }
 
@@ -1739,6 +1756,11 @@ static void configure_main_menu_items(void) {
     .title = "Stop Current Fast",
     .subtitle = "",
     .callback = menu_stop_current_callback
+  };
+  s_main_menu_items[MAIN_MENU_INDEX_CANCEL_CURRENT] = (SimpleMenuItem) {
+    .title = "Cancel Current Fast",
+    .subtitle = "",
+    .callback = menu_cancel_current_callback
   };
   s_main_menu_items[MAIN_MENU_INDEX_HISTORY] = (SimpleMenuItem) {
     .title = "History",

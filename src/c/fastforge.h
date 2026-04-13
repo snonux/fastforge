@@ -28,5 +28,6 @@ void load_all_data(void);
 bool fast_is_running(void);
 bool fast_start(uint16_t preset_target_minutes);
 bool fast_stop(void);
+bool fast_cancel(void);
 
 #endif
