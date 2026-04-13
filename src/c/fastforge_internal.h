@@ -35,5 +35,6 @@ void show_placeholder_window(const char *title, const char *body, const char *hi
 void fastforge_history_register_app_message_handlers(void);
 void fastforge_history_stop_export(void);
 void fastforge_force_goal_alarm(void);
+void fastforge_reschedule_alarm_for_seconds(uint32_t seconds);
 
 #endif

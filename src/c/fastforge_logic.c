@@ -9,7 +9,6 @@ typedef time_t ff_sys_time_t;
 #define time_t long
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 
 
@@ -84,38 +83,21 @@ time_t local_day_start(time_t timestamp) {
   return (time_t)mktime(&tm_copy);
 }
 
-static int compare_time_t_ascending(const void *a, const void *b) {
-  const time_t time_a = *(const time_t *)a;
-  const time_t time_b = *(const time_t *)b;
-  if (time_a < time_b) {
-    return -1;
-  }
-  if (time_a > time_b) {
-    return 1;
-  }
-  return 0;
+
+
+/* Convert a Unix timestamp to a UTC day number (seconds since epoch / 86400).
+ * Avoids localtime()/mktime() calls that consume significant stack depth. */
+static time_t utc_day_number(time_t t) {
+  return (t > 0) ? (t / 86400) : -1;
 }
 
-static bool is_next_local_day(time_t first_day, time_t second_day) {
-  if (first_day <= 0 || second_day <= 0 || second_day < first_day) {
-    return false;
-  }
-
-  ff_sys_time_t sys_first_day = (ff_sys_time_t)first_day;
-  struct tm *tm_info = localtime(&sys_first_day);
-  if (!tm_info) {
-    return false;
-  }
-
-  struct tm next_day_tm = *tm_info;
-  next_day_tm.tm_mday += 1;
-  next_day_tm.tm_hour = 0;
-  next_day_tm.tm_min = 0;
-  next_day_tm.tm_sec = 0;
-  next_day_tm.tm_isdst = -1;
-  return (time_t)mktime(&next_day_tm) == second_day;
-}
-
+/* Recompute streak data from a history array sorted by end_time ascending
+ * (guaranteed by sort_history_by_end_time()).
+ *
+ * Uses UTC day numbers via integer division to avoid localtime()/mktime()
+ * calls — those functions burn stack in the already-deep Pebble call chain
+ * (app task stack ≈2 KB, typically 1.5 KB consumed by firmware before our
+ * click handler fires). */
 void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now, StreakData *out) {
   if (!out) {
     return;
@@ -129,21 +111,13 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
     return;
   }
 
-  if ((size_t)count > SIZE_MAX / sizeof(time_t)) {
-    return;
-  }
-
-  size_t completion_capacity = (size_t)count;
-  time_t *completion_days = malloc(completion_capacity * sizeof(*completion_days));
-  if (!completion_days) {
-    return;
-  }
-  int completion_day_count = 0;
+  time_t prev_day = -1;
+  uint16_t run_length = 0;
+  uint16_t longest = 0;
 
   for (int i = 0; i < count; i++) {
     const FastEntry *entry = &entries[i];
-    time_t duration = entry_duration_seconds(entry);
-    if (duration <= 0 || entry->end_time <= 0) {
+    if (entry_duration_seconds(entry) <= 0 || entry->end_time <= 0) {
       continue;
     }
 
@@ -151,32 +125,17 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
       out->last_completed_fast_end = entry->end_time;
     }
 
-    time_t day_start = local_day_start(entry->end_time);
-    if (day_start <= 0) {
+    time_t day = utc_day_number(entry->end_time);
+    if (day < 0) {
       continue;
     }
 
-    completion_days[completion_day_count++] = day_start;
-  }
-
-  if (completion_day_count <= 0) {
-    free(completion_days);
-    return;
-  }
-
-  qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
-
-  uint16_t run_length = 0;
-  uint16_t longest = 0;
-  for (int i = 0; i < completion_day_count; i++) {
-    if (i == 0 || completion_days[i] == completion_days[i - 1]) {
-      if (i == 0) {
-        run_length = 1;
-      }
+    if (day == prev_day) {
+      /* Multiple fasts on the same UTC day — count the day only once. */
       continue;
     }
 
-    if (is_next_local_day(completion_days[i - 1], completion_days[i])) {
+    if (prev_day < 0 || day == prev_day + 1) {
       run_length++;
     } else {
       run_length = 1;
@@ -185,20 +144,23 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
     if (run_length > longest) {
       longest = run_length;
     }
+    prev_day = day;
+  }
+
+  if (run_length == 0) {
+    return; /* no valid completions */
   }
 
   if (longest == 0) {
-    longest = 1;
+    longest = run_length;
   }
 
-  time_t today_day_start = local_day_start(now);
-  time_t last_completion_day = completion_days[completion_day_count - 1];
-  if (last_completion_day == today_day_start ||
-      is_next_local_day(last_completion_day, today_day_start)) {
+  /* Current streak is live only if the last completion was today or yesterday. */
+  time_t today = utc_day_number(now);
+  if (prev_day == today || prev_day == today - 1) {
     out->current_streak = run_length;
   }
   out->longest_streak = longest;
-  free(completion_days);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {

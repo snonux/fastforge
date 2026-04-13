@@ -350,3 +350,15 @@ static void alarm_callback(void *data) {
 void fastforge_force_goal_alarm(void) {
   alarm_callback(NULL);
 }
+
+/* Override the scheduled alarm to fire after the given number of seconds.
+ * Used by the 10-second dev preset to bypass the per-minute granularity of
+ * target_minutes without touching the FastEntry data model. */
+void fastforge_reschedule_alarm_for_seconds(uint32_t seconds) {
+  if (alarm_timer) {
+    app_timer_cancel(alarm_timer);
+    alarm_timer = NULL;
+  }
+  target_time = fastforge_now() + (time_t)seconds;
+  alarm_timer = app_timer_register(seconds * 1000, alarm_callback, NULL);
+}

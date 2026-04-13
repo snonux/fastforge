@@ -27,7 +27,8 @@ enum {
   PRESET_MENU_INDEX_28H = 5,
   PRESET_MENU_INDEX_30H = 6,
   PRESET_MENU_INDEX_36H = 7,
-  PRESET_MENU_ITEM_COUNT = 8
+  PRESET_MENU_INDEX_10S = 8, /* dev/test: fires alarm after 10 s */
+  PRESET_MENU_ITEM_COUNT = 9
 };
 
 static Window *s_menu_window;
@@ -569,6 +570,11 @@ static void refresh_timer_view_layers(void) {
 
 static void refresh_timer_view_idle(void) {
   apply_timer_theme(false);
+  /* Restore the large number font in case we were in overtime mode before. */
+  if (s_timer_layer) {
+    text_layer_set_font(s_timer_layer,
+                        fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
+  }
   snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
   snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
@@ -588,9 +594,16 @@ static void refresh_timer_view_running(time_t elapsed) {
   if (target_seconds > 0) {
     time_t remaining = (time_t)target_seconds - elapsed;
     if (remaining > 0) {
+      /* Positive countdown: use the large number font — "HH:MM:SS" = 8 chars fits fine. */
+      text_layer_set_font(s_timer_layer,
+                          fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
       snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
       format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     } else {
+      /* Overtime: "-HH:MM:SS" is 9 chars which overflows BITHAM_34 on 144 px wide display.
+       * Switch to GOTHIC_28_BOLD which fits all 9 characters comfortably. */
+      text_layer_set_font(s_timer_layer,
+                          fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
       snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
       format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     }
@@ -1155,6 +1168,42 @@ static void menu_about_callback(int index, void *context) {
                           "BACK Menu");
 }
 
+/* Start a fast whose alarm fires after 10 seconds, used for quick dev/test
+ * runs of the goal-reached flow.  The stored target_minutes stays 1 (the
+ * SDK minimum) so the data model remains consistent; only the live alarm
+ * timer is shortened via fastforge_reschedule_alarm_for_seconds(). */
+static void start_fast_from_test_preset(void) {
+  if (fast_is_running()) {
+    show_placeholder_window("FAST RUNNING",
+                            "Stop the current fast before starting a new one.",
+                            "BACK Menu");
+    return;
+  }
+
+  global_target_minutes = 1;
+  if (!fast_start(1)) {
+    show_placeholder_window("FAST RUNNING",
+                            "Stop the current fast before starting a new one.",
+                            "BACK Menu");
+    return;
+  }
+
+  /* Shorten the alarm to 10 s (fast_start registered a 60 s one). */
+  fastforge_reschedule_alarm_for_seconds(10);
+
+  if (window_stack_contains_window(s_presets_window)) {
+    window_stack_remove(s_presets_window, false);
+  }
+  safe_push_window(s_timer_window, true);
+  refresh_all_ui_state();
+}
+
+static void preset_10s_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  start_fast_from_test_preset();
+}
+
 static void preset_16h_callback(int index, void *context) {
   (void)index;
   (void)context;
@@ -1329,6 +1378,7 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
     history_menu_reload();
   }
   refresh_timer_view();
+  refresh_goal_window_content(); /* keep elapsed time live while goal window is open */
   refresh_running_edit_window_content();
 }
 
@@ -1437,7 +1487,8 @@ static void goal_window_load(Window *window) {
                                         GTextAlignmentCenter,
                                         FONT_KEY_GOTHIC_14_BOLD,
                                         theme_goal_text_color(), theme_goal_background_color(), true);
-  text_layer_set_text(s_goal_hint_layer, "SELECT Stop\nDOWN Continue");
+  /* Fast continues automatically; any key dismisses this overlay. */
+  text_layer_set_text(s_goal_hint_layer, "BACK/DN Dismiss\nSEL Stop fast");
 
   add_text_layer(window_layer, s_goal_title_layer);
   add_text_layer(window_layer, s_goal_time_layer);
@@ -1855,6 +1906,13 @@ static void configure_preset_items(void) {
     .title = "36 hours",
     .subtitle = "Deep ketosis push",
     .callback = preset_36h_callback
+  };
+  /* Dev/test preset: alarm fires after 10 s so the goal-reached flow can be
+   * exercised quickly without waiting hours. Kept permanently as last item. */
+  s_presets_menu_items[PRESET_MENU_INDEX_10S] = (SimpleMenuItem) {
+    .title = "10 seconds",
+    .subtitle = "Dev: test goal alarm",
+    .callback = preset_10s_callback
   };
 
   s_presets_menu_sections[0] = (SimpleMenuSection) {
