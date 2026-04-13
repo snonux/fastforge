@@ -128,10 +128,14 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
     return;
   }
 
-  time_t completion_days[MAX_FASTS];
+  size_t completion_capacity = (size_t)count;
+  time_t *completion_days = malloc(completion_capacity * sizeof(*completion_days));
+  if (!completion_days) {
+    return;
+  }
   int completion_day_count = 0;
 
-  for (int i = 0; i < count && completion_day_count < MAX_FASTS; i++) {
+  for (int i = 0; i < count; i++) {
     const FastEntry *entry = &entries[i];
     time_t duration = entry_duration_seconds(entry);
     if (duration <= 0 || entry->end_time <= 0) {
@@ -151,6 +155,7 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
   }
 
   if (completion_day_count <= 0) {
+    free(completion_days);
     return;
   }
 
@@ -188,6 +193,7 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
     out->current_streak = run_length;
   }
   out->longest_streak = longest;
+  free(completion_days);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
