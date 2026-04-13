@@ -7,15 +7,16 @@
 
 enum {
   MAIN_MENU_INDEX_START_NEW = 0,
-  MAIN_MENU_INDEX_CURRENT_TIMER = 1,
-  MAIN_MENU_INDEX_STOP_CURRENT = 2,
-  MAIN_MENU_INDEX_CANCEL_CURRENT = 3,
-  MAIN_MENU_INDEX_HISTORY = 4,
-  MAIN_MENU_INDEX_STATS = 5,
-  MAIN_MENU_INDEX_SETTINGS = 6,
-  MAIN_MENU_INDEX_BACKUP = 7,
-  MAIN_MENU_INDEX_ABOUT = 8,
-  MAIN_MENU_ITEM_COUNT = 9
+  MAIN_MENU_INDEX_RESUME_LAST = 1,  /* undo an accidental fast_stop */
+  MAIN_MENU_INDEX_CURRENT_TIMER = 2,
+  MAIN_MENU_INDEX_STOP_CURRENT = 3,
+  MAIN_MENU_INDEX_CANCEL_CURRENT = 4,
+  MAIN_MENU_INDEX_HISTORY = 5,
+  MAIN_MENU_INDEX_STATS = 6,
+  MAIN_MENU_INDEX_SETTINGS = 7,
+  MAIN_MENU_INDEX_BACKUP = 8,
+  MAIN_MENU_INDEX_ABOUT = 9,
+  MAIN_MENU_ITEM_COUNT = 10
 };
 
 enum {
@@ -48,6 +49,7 @@ MenuLayer *s_history_menu_layer;
 static SimpleMenuSection s_main_menu_sections[1];
 static SimpleMenuSection s_presets_menu_sections[1];
 static SimpleMenuItem s_main_menu_items[MAIN_MENU_ITEM_COUNT];
+static char s_menu_resume_subtitle[40];
 static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
 
 static TextLayer *s_title_layer;
@@ -676,8 +678,20 @@ static void sync_main_menu_state(void) {
     snprintf(s_menu_stop_subtitle, sizeof(s_menu_stop_subtitle), "No fast running");
     snprintf(s_menu_cancel_subtitle, sizeof(s_menu_cancel_subtitle), "No fast running");
   }
+
+  /* Resume subtitle: show the duration of the last fast when it is resumable. */
+  if (!fast_is_running() && history_count > 0) {
+    char dur[16];
+    format_duration_hours_minutes(
+      entry_duration_seconds(&history[history_count - 1]), dur, sizeof(dur));
+    snprintf(s_menu_resume_subtitle, sizeof(s_menu_resume_subtitle), "Last: %s", dur);
+  } else {
+    snprintf(s_menu_resume_subtitle, sizeof(s_menu_resume_subtitle), "No previous fast");
+  }
+
   s_main_menu_items[MAIN_MENU_INDEX_STOP_CURRENT].subtitle = s_menu_stop_subtitle;
   s_main_menu_items[MAIN_MENU_INDEX_CANCEL_CURRENT].subtitle = s_menu_cancel_subtitle;
+  s_main_menu_items[MAIN_MENU_INDEX_RESUME_LAST].subtitle = s_menu_resume_subtitle;
 
   if (s_main_menu_layer) {
     menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_main_menu_layer));
@@ -1101,6 +1115,20 @@ static void menu_start_new_fast_callback(int index, void *context) {
   (void)index;
   (void)context;
   safe_push_window(s_presets_window, true);
+}
+
+/* Undo an accidental stop: restore the last history entry as the running fast. */
+static void menu_resume_last_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  if (!fast_resume_last()) {
+    show_placeholder_window("CANNOT RESUME",
+                            "No previous fast to resume, or a fast is already running.",
+                            "BACK Menu");
+    return;
+  }
+  safe_push_window(s_timer_window, true);
+  refresh_all_ui_state();
 }
 
 static void menu_current_timer_callback(int index, void *context) {
@@ -1817,6 +1845,11 @@ static void configure_main_menu_items(void) {
     .title = "Start New Fast",
     .subtitle = "Open preset targets",
     .callback = menu_start_new_fast_callback
+  };
+  s_main_menu_items[MAIN_MENU_INDEX_RESUME_LAST] = (SimpleMenuItem) {
+    .title = "Resume Last Fast",
+    .subtitle = s_menu_resume_subtitle,  /* set dynamically by sync_main_menu_state */
+    .callback = menu_resume_last_callback
   };
   s_main_menu_items[MAIN_MENU_INDEX_CURRENT_TIMER] = (SimpleMenuItem) {
     .title = "Current Timer",

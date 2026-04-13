@@ -317,6 +317,27 @@ bool fast_stop(void) {
   return true;
 }
 
+/* Restore the most-recently completed fast as the running fast.
+ * Removes the last history entry, sets it as current_fast with end_time=0,
+ * and reschedules the alarm.  Acts as an "undo stop". */
+bool fast_resume_last(void) {
+  if (fast_is_running() || history_count <= 0) {
+    return false;
+  }
+
+  current_fast = history[history_count - 1];
+  current_fast.end_time = 0;                  /* mark as running again */
+  history_count--;
+  memset(&history[history_count], 0, sizeof(FastEntry));
+
+  recompute_streak_data_for_today();
+  save_all_data();
+  schedule_alarm_if_needed();
+  APP_LOG(APP_LOG_LEVEL_INFO, "Resumed last fast: start=%ld target=%u",
+          (long)current_fast.start_time, current_fast.target_minutes);
+  return true;
+}
+
 /* Cancel discards the running fast without recording it in history. */
 bool fast_cancel(void) {
   if (!fast_is_running()) {

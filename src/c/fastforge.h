@@ -29,6 +29,7 @@ bool fast_is_running(void);
 bool fast_start(uint16_t preset_target_minutes);
 bool fast_stop(void);
 bool fast_cancel(void);
+bool fast_resume_last(void);
 bool history_delete_entry(int index);
 
 #endif
