@@ -13,7 +13,8 @@ enum {
   MAIN_MENU_INDEX_STATS = 4,
   MAIN_MENU_INDEX_SETTINGS = 5,
   MAIN_MENU_INDEX_BACKUP = 6,
-  MAIN_MENU_ITEM_COUNT = 7
+  MAIN_MENU_INDEX_ABOUT = 7,
+  MAIN_MENU_ITEM_COUNT = 8
 };
 
 enum {
@@ -1113,6 +1114,15 @@ static void menu_backup_callback(int index, void *context) {
   request_history_export();
 }
 
+/* Show author credit and source code location in the shared detail window. */
+static void menu_about_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  show_placeholder_window("ABOUT",
+                          "By Paul Buetow\n\nSource code:\ncodeberg.org/\nsnonux/fastforge",
+                          "BACK Menu");
+}
+
 static void preset_16h_callback(int index, void *context) {
   (void)index;
   (void)context;
@@ -1749,6 +1759,11 @@ static void configure_main_menu_items(void) {
     .title = "Backup to Phone",
     .subtitle = "Export history data",
     .callback = menu_backup_callback
+  };
+  s_main_menu_items[MAIN_MENU_INDEX_ABOUT] = (SimpleMenuItem) {
+    .title = "About",
+    .subtitle = "Author and source",
+    .callback = menu_about_callback
   };
 
   s_main_menu_sections[0] = (SimpleMenuSection) {

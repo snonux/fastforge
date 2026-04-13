@@ -214,6 +214,7 @@ On phone side (minimal companion app or Rebble tools) receive the data as CSV.
 5. Statistics  
 6. Settings  
 7. Backup to Phone  
+8. About  
 
 ---
 
