@@ -106,7 +106,8 @@ static char s_history_edit_start_text[32];
 static char s_history_edit_end_text[32];
 static char s_history_edit_duration_text[48];
 static char s_history_edit_stage_text[24];
-static char s_history_edit_hint_text[40];
+/* 45 bytes needed: "UP/DN adj SEL field\nHOLD save  BACK-hold del" + NUL */
+static char s_history_edit_hint_text[48];
 static char s_running_edit_start_text[32];
 static char s_running_edit_elapsed_text[32];
 static char s_running_edit_goal_text[32];
@@ -815,7 +816,7 @@ static void refresh_history_edit_window_content(void) {
            s_history_edit_field == EDIT_FIELD_NOTE ? '>' : ' ', note_text);
   snprintf(s_history_edit_stage_text, sizeof(s_history_edit_stage_text), "Badge %s",
            badge_label ? badge_label : "--");
-  snprintf(s_history_edit_hint_text, sizeof(s_history_edit_hint_text), "UP/DN adjust SEL field\nHOLD save");
+  snprintf(s_history_edit_hint_text, sizeof(s_history_edit_hint_text), "UP/DN adj SEL field\nHOLD save  BACK-hold del");
 
   text_layer_set_text(s_history_edit_title_layer, s_history_edit_title_text);
   text_layer_set_text(s_history_edit_start_layer, s_history_edit_start_text);
@@ -940,6 +941,19 @@ static void history_edit_back_click_handler(ClickRecognizerRef recognizer, void 
   window_stack_remove(s_history_edit_window, true);
 }
 
+/* Long-press BACK deletes the current entry and returns to the history list. */
+static void history_edit_delete_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (!history_delete_entry(s_history_edit_index)) {
+    return;
+  }
+  s_history_edit_index = -1;
+  refresh_timer_view();
+  refresh_stats_window_content();
+  window_stack_remove(s_history_edit_window, true);
+}
+
 static void history_edit_click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_UP, history_edit_up_click_handler);
@@ -947,6 +961,7 @@ static void history_edit_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, history_edit_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, history_edit_back_click_handler);
   window_long_click_subscribe(BUTTON_ID_SELECT, 500, history_edit_save_click_handler, NULL);
+  window_long_click_subscribe(BUTTON_ID_BACK, 700, history_edit_delete_click_handler, NULL);
 }
 
 static void running_fast_edit_apply_delta_minutes(int delta_minutes) {

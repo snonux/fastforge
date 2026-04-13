@@ -215,6 +215,26 @@ static void append_history_entry(const FastEntry *entry) {
   history[MAX_FASTS - 1] = *entry;
 }
 
+/* Remove history[index], shift tail entries down, and persist the change. */
+bool history_delete_entry(int index) {
+  if (index < 0 || index >= history_count) {
+    return false;
+  }
+
+  int entries_after = history_count - index - 1;
+  if (entries_after > 0) {
+    memmove(&history[index], &history[index + 1], sizeof(FastEntry) * (size_t)entries_after);
+  }
+  history_count--;
+  memset(&history[history_count], 0, sizeof(FastEntry));
+
+  recompute_streak_data_for_today();
+  save_all_data();
+  history_menu_reload();
+  APP_LOG(APP_LOG_LEVEL_INFO, "Deleted history entry %d, history_count=%d", index, history_count);
+  return true;
+}
+
 static uint16_t resolve_target_minutes(uint16_t preset_target_minutes) {
   if (preset_target_minutes > 0) {
     return preset_target_minutes;
