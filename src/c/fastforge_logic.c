@@ -1,10 +1,12 @@
-#undef _TIME_H_
+#include "fastforge_logic.h"
+
 #ifdef time_t
 #undef time_t
 #endif
+#undef _TIME_H_
 #include <time.h>
-
-#include "fastforge_logic.h"
+typedef time_t ff_sys_time_t;
+#define time_t long
 
 #include <stdio.h>
 
@@ -66,7 +68,8 @@ time_t local_day_start(time_t timestamp) {
     return 0;
   }
 
-  struct tm *tm_info = localtime(&timestamp);
+  ff_sys_time_t sys_timestamp = (ff_sys_time_t)timestamp;
+  struct tm *tm_info = localtime(&sys_timestamp);
   if (!tm_info) {
     return 0;
   }
@@ -76,7 +79,7 @@ time_t local_day_start(time_t timestamp) {
   tm_copy.tm_min = 0;
   tm_copy.tm_sec = 0;
   tm_copy.tm_isdst = -1;
-  return mktime(&tm_copy);
+  return (time_t)mktime(&tm_copy);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
