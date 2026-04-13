@@ -67,6 +67,10 @@ rebuild:
 quick:
     just build && just install
 
+# Run host unit tests (TZ=UTC for deterministic localtime/streak checks)
+test:
+    make -C tests test
+
 # Build with DEBUG=1 compile flag
 debug-build:
     DEBUG=1 pebble build

@@ -41,6 +41,7 @@ Available commands:
 - `just quick`: quick rebuild + install
 - `just screenshot`: screenshot of emulator
 - `just sdk-version`: print Pebble SDK/tool version
+- `just test`: run host unit tests (expects `TZ=UTC` for deterministic date/streak results)
 
 Daily loop after reboot:
 
