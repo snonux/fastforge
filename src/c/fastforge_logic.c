@@ -1,15 +1,7 @@
 #include "fastforge_logic.h"
 
 #include <stdio.h>
-#ifdef _TIME_H_
-#undef _TIME_H_
-#endif
-#ifndef __time_t_defined
-#define __time_t_defined
-#endif
-#ifndef _TIME_T_DECLARED
-#define _TIME_T_DECLARED
-#endif
+#include <pebble.h>
 #include <time.h>
 
 
