@@ -244,12 +244,61 @@ static GColor theme_goal_text_color(void) {
   return GColorWhite;
 }
 
+static GColor theme_timer_background_color(bool goal_reached) {
+  return goal_reached ? theme_goal_background_color()
+                      : theme_surface_background_color();
+}
+
+static GColor theme_timer_text_color(bool goal_reached) {
+  return goal_reached ? theme_goal_text_color() : GColorBlack;
+}
+
 static GColor theme_progress_track_color(void) {
   return GColorLightGray;
 }
 
 static GColor theme_progress_fill_color(void) {
   return is_color_platform() ? GColorJaegerGreen : GColorGreen;
+}
+
+static bool timer_goal_reached_for_elapsed(time_t elapsed_seconds) {
+  uint32_t target_seconds = current_fast.target_minutes * 60;
+  return target_seconds > 0 && elapsed_seconds >= (time_t)target_seconds;
+}
+
+static void apply_timer_theme(bool goal_reached) {
+  GColor background = theme_timer_background_color(goal_reached);
+  GColor foreground = theme_timer_text_color(goal_reached);
+  window_set_background_color(s_timer_window, background);
+  text_layer_set_text_color(s_title_layer, foreground);
+  text_layer_set_text_color(s_timer_layer, foreground);
+  text_layer_set_text_color(s_detail_layer, foreground);
+  text_layer_set_text_color(s_stage_layer, foreground);
+  text_layer_set_text_color(s_hint_layer, foreground);
+}
+
+static void format_remaining_with_overtime(time_t remaining_seconds,
+                                           char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+
+  if (remaining_seconds >= 0) {
+    format_hhmmss(remaining_seconds, buffer, size);
+    return;
+  }
+
+  char overtime_text[16];
+  format_hhmmss(-remaining_seconds, overtime_text, sizeof(overtime_text));
+
+  size_t copy_len = strlen(overtime_text);
+  if (copy_len > size - 2) {
+    copy_len = size - 2;
+  }
+
+  buffer[0] = '-';
+  memcpy(buffer + 1, overtime_text, copy_len);
+  buffer[copy_len + 1] = '\0';
 }
 
 static Window *create_window_with_handlers(WindowHandlers handlers,
@@ -500,7 +549,14 @@ static int tick_x_for_seconds(uint32_t total_seconds, uint32_t tick_seconds, int
 
 static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  graphics_context_set_fill_color(ctx, theme_progress_track_color());
+  bool goal_reached = false;
+  if (fast_is_running()) {
+    goal_reached = timer_goal_reached_for_elapsed(fastforge_now() - current_fast.start_time);
+  }
+
+  graphics_context_set_fill_color(ctx,
+                                  goal_reached ? theme_goal_background_color()
+                                               : theme_progress_track_color());
   graphics_fill_rect(ctx, bounds, 2, GCornersAll);
   if (!fast_is_running()) {
     return;
@@ -514,11 +570,13 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
   uint32_t total_seconds = (uint32_t)current_fast.target_minutes * 60;
   int fill_width = progress_width_for_elapsed(elapsed, total_seconds, bounds.size.w);
   if (fill_width > 0) {
-    graphics_context_set_fill_color(ctx, theme_progress_fill_color());
+    graphics_context_set_fill_color(ctx,
+                                    goal_reached ? theme_goal_text_color()
+                                                 : theme_progress_fill_color());
     graphics_fill_rect(ctx, GRect(0, 0, fill_width, bounds.size.h), 2, GCornersAll);
   }
 
-  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_context_set_stroke_color(ctx, goal_reached ? theme_goal_text_color() : GColorBlack);
   int tick_12h_x = tick_x_for_seconds(total_seconds, 12 * 3600, bounds.size.w);
   int tick_18h_x = tick_x_for_seconds(total_seconds, 18 * 3600, bounds.size.w);
   int tick_24h_x = tick_x_for_seconds(total_seconds, 24 * 3600, bounds.size.w);
@@ -544,6 +602,7 @@ static void refresh_timer_view_layers(void) {
 }
 
 static void refresh_timer_view_idle(void) {
+  apply_timer_theme(false);
   snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
   snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
@@ -558,14 +617,16 @@ static void refresh_timer_view_idle(void) {
 static void refresh_timer_view_running(time_t elapsed) {
   update_max_stage_if_needed(elapsed);
   uint32_t target_seconds = current_fast.target_minutes * 60;
+  bool goal_reached = timer_goal_reached_for_elapsed(elapsed);
+  apply_timer_theme(goal_reached);
   if (target_seconds > 0) {
     time_t remaining = (time_t)target_seconds - elapsed;
     if (remaining > 0) {
       snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
-      format_hhmmss(remaining, s_timer_text, sizeof(s_timer_text));
+      format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     } else {
       snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
-      format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+      format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     }
     char elapsed_text[16];
     format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
