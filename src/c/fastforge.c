@@ -1738,7 +1738,12 @@ static void detail_window_load(Window *window) {
   add_text_layer(window_layer, s_placeholder_title_layer);
   add_text_layer(window_layer, s_placeholder_body_layer);
   add_text_layer(window_layer, s_placeholder_hint_layer);
-  set_placeholder_content(s_placeholder_title_text, s_placeholder_body_text, s_placeholder_hint_text);
+  /* Buffers were already filled by show_placeholder_window before the window
+   * was pushed.  Set the layer pointers directly to avoid snprintf(buf, "%s",
+   * buf) undefined-behaviour (self-copy clears the string on Pebble's libc). */
+  text_layer_set_text(s_placeholder_title_layer, s_placeholder_title_text);
+  text_layer_set_text(s_placeholder_body_layer, s_placeholder_body_text);
+  text_layer_set_text(s_placeholder_hint_layer, s_placeholder_hint_text);
 }
 
 static void detail_window_unload(Window *window) {
