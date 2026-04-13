@@ -1,6 +1,5 @@
 #include "fastforge_internal.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 FastEntry history[MAX_FASTS];
@@ -49,38 +48,6 @@ static void normalize_loaded_data(void) {
   }
 }
 
-static int compare_time_t_ascending(const void *a, const void *b) {
-  const time_t time_a = *(const time_t *)a;
-  const time_t time_b = *(const time_t *)b;
-  if (time_a < time_b) {
-    return -1;
-  }
-  if (time_a > time_b) {
-    return 1;
-  }
-  return 0;
-}
-
-static bool is_next_local_day(time_t first_day, time_t second_day) {
-  if (first_day <= 0 || second_day <= 0 || second_day < first_day) {
-    return false;
-  }
-
-  struct tm *tm_info = localtime(&first_day);
-  if (!tm_info) {
-    return false;
-  }
-
-  struct tm next_day_tm = *tm_info;
-  next_day_tm.tm_mday += 1;
-  next_day_tm.tm_hour = 0;
-  next_day_tm.tm_min = 0;
-  next_day_tm.tm_sec = 0;
-  next_day_tm.tm_isdst = -1;
-  time_t expected_next_day = mktime(&next_day_tm);
-  return expected_next_day == second_day;
-}
-
 #ifdef DEBUG
 time_t fastforge_now(void) {
   return time(NULL) + (s_fake_time_enabled ? s_fake_time_offset_seconds : 0);
@@ -91,85 +58,8 @@ time_t fastforge_now(void) {
 }
 #endif
 
-static int collect_completion_days(time_t *completion_days, int max_days) {
-  int completion_day_count = 0;
-
-  for (int i = 0; i < history_count && completion_day_count < max_days; i++) {
-    const FastEntry *entry = &history[i];
-    time_t duration = entry_duration_seconds(entry);
-    if (duration <= 0 || entry->end_time <= 0) {
-      continue;
-    }
-
-    if (entry->end_time > streak_data.last_completed_fast_end) {
-      streak_data.last_completed_fast_end = entry->end_time;
-    }
-
-    time_t day_start = local_day_start(entry->end_time);
-    if (day_start <= 0) {
-      continue;
-    }
-    completion_days[completion_day_count++] = day_start;
-  }
-
-  return completion_day_count;
-}
-
-static void apply_completion_days_to_streaks(time_t *completion_days, int completion_day_count) {
-  qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
-
-  uint16_t run_length = 0;
-  uint16_t longest = 0;
-  for (int i = 0; i < completion_day_count; i++) {
-    if (i == 0 || completion_days[i] == completion_days[i - 1]) {
-      if (i == 0) {
-        run_length = 1;
-      }
-      continue;
-    }
-
-    if (is_next_local_day(completion_days[i - 1], completion_days[i])) {
-      run_length++;
-    } else {
-      run_length = 1;
-    }
-
-    if (run_length > longest) {
-      longest = run_length;
-    }
-  }
-
-  if (longest == 0) {
-    longest = 1;
-  }
-
-  time_t today_day_start = local_day_start(fastforge_now());
-  time_t last_completion_day = completion_days[completion_day_count - 1];
-  if (last_completion_day == today_day_start ||
-      is_next_local_day(last_completion_day, today_day_start)) {
-    streak_data.current_streak = run_length;
-  } else {
-    streak_data.current_streak = 0;
-  }
-  streak_data.longest_streak = longest;
-}
-
 static void recompute_streak_data_from_history(void) {
-  streak_data.current_streak = 0;
-  streak_data.longest_streak = 0;
-  streak_data.last_completed_fast_end = 0;
-
-  if (history_count <= 0) {
-    return;
-  }
-
-  time_t completion_days[MAX_FASTS];
-  int completion_day_count = collect_completion_days(completion_days, MAX_FASTS);
-  if (completion_day_count == 0) {
-    return;
-  }
-
-  apply_completion_days_to_streaks(completion_days, completion_day_count);
+  fastforge_streak_recompute(history, history_count, fastforge_now(), &streak_data);
 }
 
 void recompute_streak_data_for_today(void) {

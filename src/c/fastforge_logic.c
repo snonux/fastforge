@@ -9,6 +9,7 @@ typedef time_t ff_sys_time_t;
 #define time_t long
 
 #include <stdio.h>
+#include <stdlib.h>
 
 
 time_t entry_duration_seconds(const FastEntry *entry) {
@@ -80,6 +81,113 @@ time_t local_day_start(time_t timestamp) {
   tm_copy.tm_sec = 0;
   tm_copy.tm_isdst = -1;
   return (time_t)mktime(&tm_copy);
+}
+
+static int compare_time_t_ascending(const void *a, const void *b) {
+  const time_t time_a = *(const time_t *)a;
+  const time_t time_b = *(const time_t *)b;
+  if (time_a < time_b) {
+    return -1;
+  }
+  if (time_a > time_b) {
+    return 1;
+  }
+  return 0;
+}
+
+static bool is_next_local_day(time_t first_day, time_t second_day) {
+  if (first_day <= 0 || second_day <= 0 || second_day < first_day) {
+    return false;
+  }
+
+  ff_sys_time_t sys_first_day = (ff_sys_time_t)first_day;
+  struct tm *tm_info = localtime(&sys_first_day);
+  if (!tm_info) {
+    return false;
+  }
+
+  struct tm next_day_tm = *tm_info;
+  next_day_tm.tm_mday += 1;
+  next_day_tm.tm_hour = 0;
+  next_day_tm.tm_min = 0;
+  next_day_tm.tm_sec = 0;
+  next_day_tm.tm_isdst = -1;
+  return (time_t)mktime(&next_day_tm) == second_day;
+}
+
+void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now, StreakData *out) {
+  if (!out) {
+    return;
+  }
+
+  out->current_streak = 0;
+  out->longest_streak = 0;
+  out->last_completed_fast_end = 0;
+
+  if (!entries || count <= 0) {
+    return;
+  }
+
+  time_t completion_days[MAX_FASTS];
+  int completion_day_count = 0;
+
+  for (int i = 0; i < count && completion_day_count < MAX_FASTS; i++) {
+    const FastEntry *entry = &entries[i];
+    time_t duration = entry_duration_seconds(entry);
+    if (duration <= 0 || entry->end_time <= 0) {
+      continue;
+    }
+
+    if (entry->end_time > out->last_completed_fast_end) {
+      out->last_completed_fast_end = entry->end_time;
+    }
+
+    time_t day_start = local_day_start(entry->end_time);
+    if (day_start <= 0) {
+      continue;
+    }
+
+    completion_days[completion_day_count++] = day_start;
+  }
+
+  if (completion_day_count <= 0) {
+    return;
+  }
+
+  qsort(completion_days, (size_t)completion_day_count, sizeof(time_t), compare_time_t_ascending);
+
+  uint16_t run_length = 0;
+  uint16_t longest = 0;
+  for (int i = 0; i < completion_day_count; i++) {
+    if (i == 0 || completion_days[i] == completion_days[i - 1]) {
+      if (i == 0) {
+        run_length = 1;
+      }
+      continue;
+    }
+
+    if (is_next_local_day(completion_days[i - 1], completion_days[i])) {
+      run_length++;
+    } else {
+      run_length = 1;
+    }
+
+    if (run_length > longest) {
+      longest = run_length;
+    }
+  }
+
+  if (longest == 0) {
+    longest = 1;
+  }
+
+  time_t today_day_start = local_day_start(now);
+  time_t last_completion_day = completion_days[completion_day_count - 1];
+  if (last_completion_day == today_day_start ||
+      is_next_local_day(last_completion_day, today_day_start)) {
+    out->current_streak = run_length;
+  }
+  out->longest_streak = longest;
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {

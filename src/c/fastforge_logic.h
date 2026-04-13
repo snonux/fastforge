@@ -14,5 +14,6 @@ void format_hhmmss(time_t seconds, char *buffer, size_t size);
 void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size);
 time_t local_day_start(time_t timestamp);
 bool running_fast_is_at_target(const FastEntry *entry, time_t now);
+void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now, StreakData *out);
 
 #endif
