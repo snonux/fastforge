@@ -11,10 +11,9 @@ enum {
   MAIN_MENU_INDEX_STOP_CURRENT = 2,
   MAIN_MENU_INDEX_HISTORY = 3,
   MAIN_MENU_INDEX_STATS = 4,
-  MAIN_MENU_INDEX_SCIENCE = 5,
-  MAIN_MENU_INDEX_SETTINGS = 6,
-  MAIN_MENU_INDEX_BACKUP = 7,
-  MAIN_MENU_ITEM_COUNT = 8
+  MAIN_MENU_INDEX_SETTINGS = 5,
+  MAIN_MENU_INDEX_BACKUP = 6,
+  MAIN_MENU_ITEM_COUNT = 7
 };
 
 enum {
@@ -33,7 +32,6 @@ static Window *s_menu_window;
 static Window *s_timer_window;
 static Window *s_goal_window;
 static Window *s_presets_window;
-static Window *s_science_window;
 static Window *s_settings_window;
 static Window *s_stats_window;
 static Window *s_detail_window;
@@ -62,10 +60,6 @@ static TextLayer *s_goal_time_layer;
 static TextLayer *s_goal_stage_layer;
 static TextLayer *s_goal_hint_layer;
 
-static TextLayer *s_science_title_layer;
-static TextLayer *s_science_timeline_layer;
-static TextLayer *s_science_showdown_layer;
-static TextLayer *s_science_hint_layer;
 static TextLayer *s_settings_title_layer;
 static TextLayer *s_settings_target_layer;
 #ifdef DEBUG
@@ -96,9 +90,6 @@ static char s_detail_text[48];
 static char s_stage_text[32];
 static char s_goal_time_text[24];
 static char s_goal_stage_text[24];
-static char s_science_timeline_text[192];
-static char s_science_showdown_text[160];
-static char s_science_hint_text[80];
 static char s_settings_target_text[32];
 #ifdef DEBUG
 static char s_settings_dev_text[32];
@@ -136,7 +127,6 @@ static void refresh_timer_view(void);
 static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
 static void refresh_running_edit_window_content(void);
-static void refresh_science_window_content(void);
 static void refresh_settings_window_content(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
@@ -309,34 +299,6 @@ static Window *create_window_with_handlers(WindowHandlers handlers,
   }
   window_set_window_handlers(window, handlers);
   return window;
-}
-
-static void set_science_content(void) {
-  snprintf(s_science_timeline_text, sizeof(s_science_timeline_text),
-           "0h Fed  4h insulin drop\n"
-           "8h Glycogen drop  12h fat burn\n"
-           "18h Ketones rise  24h deep keto\n"
-           "36h+ Adaptation peaks");
-  snprintf(s_science_showdown_text, sizeof(s_science_showdown_text),
-           "5x20h = 100h/wk\n"
-           "2x24h+2x18h = 84h/wk\n"
-           "20h wins consistency.\n"
-           "24h anchor fits the mixed plan.");
-  snprintf(s_science_hint_text, sizeof(s_science_hint_text),
-           "SELECT 20h plan\nDOWN 24h anchor  BACK Menu");
-}
-
-static void refresh_science_window_content(void) {
-  set_science_content();
-  if (s_science_timeline_layer) {
-    text_layer_set_text(s_science_timeline_layer, s_science_timeline_text);
-  }
-  if (s_science_showdown_layer) {
-    text_layer_set_text(s_science_showdown_layer, s_science_showdown_text);
-  }
-  if (s_science_hint_layer) {
-    text_layer_set_text(s_science_hint_layer, s_science_hint_text);
-  }
 }
 
 static uint16_t clamp_default_target_minutes(int target_minutes) {
@@ -731,29 +693,6 @@ static void start_fast_from_preset(uint16_t target_minutes) {
 
   if (window_stack_contains_window(s_presets_window)) {
     window_stack_remove(s_presets_window, false);
-  }
-  safe_push_window(s_timer_window, true);
-  refresh_all_ui_state();
-}
-
-static void start_fast_from_science_preset(uint16_t target_minutes) {
-  if (fast_is_running()) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
-    return;
-  }
-
-  global_target_minutes = target_minutes;
-  if (!fast_start(target_minutes)) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
-    return;
-  }
-
-  if (window_stack_contains_window(s_science_window)) {
-    window_stack_remove(s_science_window, false);
   }
   safe_push_window(s_timer_window, true);
   refresh_all_ui_state();
@@ -1161,13 +1100,6 @@ static void menu_statistics_callback(int index, void *context) {
   safe_push_window(s_stats_window, true);
 }
 
-static void menu_science_callback(int index, void *context) {
-  (void)index;
-  (void)context;
-  refresh_science_window_content();
-  safe_push_window(s_science_window, true);
-}
-
 static void menu_settings_callback(int index, void *context) {
   (void)index;
   (void)context;
@@ -1301,32 +1233,6 @@ static void placeholder_dismiss_handler(ClickRecognizerRef recognizer, void *con
   (void)recognizer;
   (void)context;
   window_stack_remove(s_detail_window, true);
-}
-
-static void science_select_click_handler(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  start_fast_from_science_preset(20 * 60);
-}
-
-static void science_down_click_handler(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  start_fast_from_science_preset(24 * 60);
-}
-
-static void science_back_click_handler(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  window_stack_remove(s_science_window, true);
-}
-
-static void science_click_config_provider(void *context) {
-  (void)context;
-  window_single_click_subscribe(BUTTON_ID_SELECT, science_select_click_handler);
-  window_single_click_subscribe(BUTTON_ID_DOWN, science_down_click_handler);
-  window_single_click_subscribe(BUTTON_ID_BACK, science_back_click_handler);
-  window_single_click_subscribe(BUTTON_ID_UP, science_back_click_handler);
 }
 
 static void settings_up_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -1715,55 +1621,6 @@ static void stats_window_appear(Window *window) {
   refresh_stats_window_content();
 }
 
-static void science_window_load(Window *window) {
-  Layer *window_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(window_layer);
-
-  s_science_title_layer = create_text_layer(GRect(0, 4, bounds.size.w, 24),
-                                            GTextAlignmentCenter,
-                                            FONT_KEY_GOTHIC_24_BOLD,
-                                            GColorBlack, GColorClear, false);
-  text_layer_set_text(s_science_title_layer, "FASTING SCIENCE");
-
-  s_science_timeline_layer = create_text_layer(GRect(4, 28, bounds.size.w - 8, 56),
-                                               GTextAlignmentLeft,
-                                               FONT_KEY_GOTHIC_14,
-                                               GColorBlack, GColorClear, true);
-
-  s_science_showdown_layer = create_text_layer(GRect(4, 84, bounds.size.w - 8, 54),
-                                               GTextAlignmentLeft,
-                                               FONT_KEY_GOTHIC_14_BOLD,
-                                               GColorBlack, GColorClear, true);
-
-  s_science_hint_layer = create_text_layer(GRect(0, 140, bounds.size.w, 28),
-                                           GTextAlignmentCenter,
-                                           FONT_KEY_GOTHIC_14_BOLD,
-                                           GColorBlack, GColorClear, true);
-
-  add_text_layer(window_layer, s_science_title_layer);
-  add_text_layer(window_layer, s_science_timeline_layer);
-  add_text_layer(window_layer, s_science_showdown_layer);
-  add_text_layer(window_layer, s_science_hint_layer);
-  refresh_science_window_content();
-}
-
-static void science_window_unload(Window *window) {
-  (void)window;
-  text_layer_destroy(s_science_title_layer);
-  s_science_title_layer = NULL;
-  text_layer_destroy(s_science_timeline_layer);
-  s_science_timeline_layer = NULL;
-  text_layer_destroy(s_science_showdown_layer);
-  s_science_showdown_layer = NULL;
-  text_layer_destroy(s_science_hint_layer);
-  s_science_hint_layer = NULL;
-}
-
-static void science_window_appear(Window *window) {
-  (void)window;
-  refresh_science_window_content();
-}
-
 static void settings_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
@@ -1882,11 +1739,6 @@ static void configure_main_menu_items(void) {
     .title = "Statistics",
     .subtitle = "Dashboard metrics",
     .callback = menu_statistics_callback
-  };
-  s_main_menu_items[MAIN_MENU_INDEX_SCIENCE] = (SimpleMenuItem) {
-    .title = "Fasting Science",
-    .subtitle = "Physiology timeline",
-    .callback = menu_science_callback
   };
   s_main_menu_items[MAIN_MENU_INDEX_SETTINGS] = (SimpleMenuItem) {
     .title = "Settings",
@@ -2013,13 +1865,6 @@ static void init_info_windows(void) {
   }, NULL);
   window_set_background_color(s_stats_window, theme_surface_background_color());
 
-  s_science_window = create_window_with_handlers((WindowHandlers) {
-    .load = science_window_load,
-    .appear = science_window_appear,
-    .unload = science_window_unload
-  }, science_click_config_provider);
-  window_set_background_color(s_science_window, theme_surface_background_color());
-
   s_settings_window = create_window_with_handlers((WindowHandlers) {
     .load = settings_window_load,
     .appear = settings_window_appear,
@@ -2058,7 +1903,6 @@ static void destroy_windows(void) {
   window_destroy(s_debug_window);
 #endif
   window_destroy(s_settings_window);
-  window_destroy(s_science_window);
   window_destroy(s_stats_window);
   window_destroy(s_running_edit_window);
   window_destroy(s_history_edit_window);

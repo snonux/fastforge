@@ -38,7 +38,7 @@ Everything runs locally on your Linux laptop using the official Rebble SDK. No C
 | High | Fasting Streak Counter | Current + longest streak on every screen |
 | High | Statistics Dashboard | Avg length, total hours, success rate, longest fast |
 | Medium | Notes/Tags on Fast | Quick tags + auto milestone badges (Fat Burn, Ketosis, etc.) |
-| Medium | Fasting Science Screen | Physiology timeline + 5×20 h vs 2×24 h + 2×18 h comparison |
+| ~~Medium~~ | ~~Fasting Science Screen~~ | ~~Physiology timeline + 5×20 h vs 2×24 h + 2×18 h comparison~~ (removed) |
 | Debug | Developer Mode | Fast-forward time, force alarm, fake clock (for local testing) |
 
 ---
@@ -158,18 +158,9 @@ static void timer_update_proc(Layer *layer, GContext *ctx) {
 
 ---
 
-### 7. Fasting Science Screen (Protocol Comparison)
+### 7. ~~Fasting Science Screen~~ (Removed)
 
-Add to main menu → “Fasting Science”.  
-Hard-coded text (fits Pebble screen perfectly):
-
-- **Physiology Timeline** (copy the table from earlier research)
-- **Protocol Showdown**  
-  5×20 h = 100 h/week → max daily consistency & fat oxidation  
-  2×24 h + 2×18 h = 84 h/week → deeper autophagy on long days + better sustainability  
-  Recommendation text: “Choose 5×20 h for aggressive fat loss, mixed for long-term adherence.”
-
-Include two preset buttons that auto-start a fast with the chosen target.
+This feature was removed. The physiology timeline and protocol comparison screen has been deleted from the app.
 
 ---
 
@@ -221,9 +212,8 @@ On phone side (minimal companion app or Rebble tools) receive the data as CSV.
 3. Stop Current Fast (if running)  
 4. History  
 5. Statistics  
-6. Fasting Science  
-7. Settings  
-8. Backup to Phone  
+6. Settings  
+7. Backup to Phone  
 
 ---
 
@@ -233,7 +223,7 @@ On phone side (minimal companion app or Rebble tools) receive the data as CSV.
 **Day 2:** Timer window + visuals (progress + stage) + alarm  
 **Day 3:** History + edit screens + notes/tags  
 **Day 4:** Statistics + streak + presets  
-**Day 5:** Fasting Science screen + protocol comparison  
+**Day 5:** ~~Fasting Science screen + protocol comparison~~ (feature removed)  
 **Day 6:** Settings + AppMessage backup stub  
 **Day 7:** Polish, debug menu, final testing on emulator  
 

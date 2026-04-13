@@ -134,7 +134,6 @@ This workflow was used successfully to verify:
 - current timer
 - history screen
 - statistics screen
-- fasting science screen
 - settings screen
 - backup export logs
 
