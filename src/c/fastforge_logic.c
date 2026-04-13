@@ -1,11 +1,5 @@
 #include "fastforge_logic.h"
 
-#if defined(__has_include)
-#if __has_include(<pebble.h>)
-#include <pebble.h>
-#endif
-#endif
-
 #include <stdio.h>
 #include <time.h>
 
@@ -59,25 +53,6 @@ void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
   int hours = (int)(seconds / 3600);
   int minutes = (int)((seconds % 3600) / 60);
   snprintf(buffer, size, "%dh %02dm", hours, minutes);
-}
-
-time_t local_day_start(time_t timestamp) {
-  if (timestamp <= 0) {
-    return 0;
-  }
-
-  struct tm tm_copy;
-  struct tm *tm_info = localtime(&timestamp);
-  if (!tm_info) {
-    return 0;
-  }
-
-  tm_copy = *tm_info;
-  tm_copy.tm_hour = 0;
-  tm_copy.tm_min = 0;
-  tm_copy.tm_sec = 0;
-  tm_copy.tm_isdst = -1;
-  return mktime(&tm_copy);
 }
 
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
