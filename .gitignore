@@ -25,3 +25,5 @@ build/*/system_resources.resball
 # Logs and locks
 *.log
 .lock-*
+.cursor
+.claude
