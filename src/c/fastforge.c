@@ -358,39 +358,43 @@ static void settings_toggle_developer_mode(void) {
 #endif
 
 #ifdef DEBUG
+static void debug_menu_select_callback(int index, void *context);
+
 static void debug_refresh_menu(void) {
   snprintf(s_debug_menu_clock_text, sizeof(s_debug_menu_clock_text), "Debug %+ldh %s",
            (long)(s_fake_time_offset_seconds / 3600),
            s_fake_time_enabled ? "fake" : "real");
+  /* Callbacks must be set here (not in load) because debug_refresh_menu is
+   * also called from debug_window_appear, which would otherwise clobber them. */
   s_debug_menu_items[0] = (SimpleMenuItem) {
     .title = "+1 Hour",
     .subtitle = "Advance debug clock",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_items[1] = (SimpleMenuItem) {
     .title = "+6 Hours",
     .subtitle = "Jump to next stage",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_items[2] = (SimpleMenuItem) {
     .title = "+24 Hours",
     .subtitle = "Cross whole-day boundary",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_items[3] = (SimpleMenuItem) {
     .title = "Use Real Clock",
     .subtitle = "Clear fake-time offset",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_items[4] = (SimpleMenuItem) {
     .title = "Force Goal Alarm",
     .subtitle = "Trigger goal-hit flow now",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_items[5] = (SimpleMenuItem) {
     .title = "Show Raw State",
     .subtitle = "Open debug snapshot",
-    .callback = NULL
+    .callback = debug_menu_select_callback
   };
   s_debug_menu_sections[0] = (SimpleMenuSection) {
     .title = s_debug_menu_clock_text,
@@ -469,9 +473,6 @@ static void debug_menu_select_callback(int index, void *context) {
 static void debug_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
-  for (size_t i = 0; i < ARRAY_LENGTH(s_debug_menu_items); i++) {
-    s_debug_menu_items[i].callback = debug_menu_select_callback;
-  }
   debug_refresh_menu();
   s_debug_menu_layer = simple_menu_layer_create(bounds, window, s_debug_menu_sections, 1, NULL);
   layer_add_child(window_layer, simple_menu_layer_get_layer(s_debug_menu_layer));
