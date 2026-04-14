@@ -1,8 +1,10 @@
 {
   "name": "fastforge",
-  "author": "MakeAwesomeHappen",
+  "author": "Paul Buetow",
   "version": "1.0.0",
-  "keywords": ["pebble-app"],
+  "keywords": [
+    "pebble-app"
+  ],
   "private": true,
   "dependencies": {},
   "pebble": {
