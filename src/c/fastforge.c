@@ -234,7 +234,9 @@ static GColor theme_surface_background_color(void) {
 }
 
 static GColor theme_goal_background_color(void) {
-  return is_color_platform() ? GColorOxfordBlue : GColorBlack;
+  /* GColorIslamicGreen gives a vivid celebratory contrast against white text
+   * and is clearly distinct from the mint-green running state. */
+  return is_color_platform() ? GColorIslamicGreen : GColorBlack;
 }
 
 static GColor theme_goal_text_color(void) {
@@ -572,11 +574,6 @@ static void refresh_timer_view_layers(void) {
 
 static void refresh_timer_view_idle(void) {
   apply_timer_theme(false);
-  /* Restore the large number font in case we were in overtime mode before. */
-  if (s_timer_layer) {
-    text_layer_set_font(s_timer_layer,
-                        fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
-  }
   snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
   snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
@@ -596,19 +593,11 @@ static void refresh_timer_view_running(time_t elapsed) {
   if (target_seconds > 0) {
     time_t remaining = (time_t)target_seconds - elapsed;
     if (remaining > 0) {
-      /* Positive countdown: use the large number font — "HH:MM:SS" = 8 chars fits fine. */
-      text_layer_set_font(s_timer_layer,
-                          fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS));
       snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
-      format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     } else {
-      /* Overtime: "-HH:MM:SS" is 9 chars which overflows BITHAM_34 on 144 px wide display.
-       * Switch to GOTHIC_28_BOLD which fits all 9 characters comfortably. */
-      text_layer_set_font(s_timer_layer,
-                          fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
       snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
-      format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     }
+    format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     char elapsed_text[16];
     format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
@@ -1442,9 +1431,11 @@ static void timer_window_load(Window *window) {
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_18_BOLD,
                                     GColorBlack, GColorClear, false);
+  /* GOTHIC_28_BOLD fits all 8-char "HH:MM:SS" and 9-char "-HH:MM:SS" overtime
+   * strings without truncation on the 144-px Basalt display. */
   s_timer_layer = create_text_layer(GRect(0, 28, bounds.size.w, 42),
                                     GTextAlignmentCenter,
-                                    FONT_KEY_BITHAM_34_MEDIUM_NUMBERS,
+                                    FONT_KEY_GOTHIC_28_BOLD,
                                     GColorBlack, GColorClear, false);
   s_detail_layer = create_text_layer(GRect(0, 76, bounds.size.w, 24),
                                      GTextAlignmentCenter,
