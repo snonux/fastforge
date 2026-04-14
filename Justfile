@@ -31,7 +31,9 @@ install:
     pebble install --emulator {{emulator}}
 
 # Build + Install (the command you will use most often)
+# Kills any stale emulator first so install never races against the boot animation.
 dev:
+    -pebble kill
     pebble build && pebble install --emulator {{emulator}}
 
 # Show live logs (run this in a **second** terminal)
@@ -76,7 +78,9 @@ debug-build:
     DEBUG=1 pebble build
 
 # Build + install debug app
+# Kills any stale emulator first (same reason as dev).
 debug-dev:
+    -pebble kill
     DEBUG=1 pebble build && pebble install --emulator {{emulator}}
 
 # ─────────────────────────────────────────────
