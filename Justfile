@@ -53,6 +53,18 @@ kill:
     pebble kill
 
 # ─────────────────────────────────────────────
+# Emulator recovery
+# ─────────────────────────────────────────────
+
+# Reset the basalt SPI flash to factory state.
+# Use this when 'just dev' hangs on the Pebble boot screen — it means the
+# flash was corrupted (e.g. by killing multiple concurrent qemu processes).
+reset-flash:
+    -pebble kill
+    bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/basalt/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin
+    @echo "Flash reset to factory state. Run 'just dev' to reinstall."
+
+# ─────────────────────────────────────────────
 # Maintenance commands
 # ─────────────────────────────────────────────
 

@@ -1037,7 +1037,13 @@ static void refresh_running_edit_window_content(void) {
     elapsed = 0;
   }
   char elapsed_text[20];
-  format_duration_hours_minutes(elapsed, elapsed_text, sizeof(elapsed_text));
+  if (elapsed < 60) {
+    /* Show seconds when elapsed is sub-minute so the user can see DOWN/UP
+     * adjustments that would otherwise be invisible at "0h 00m" resolution. */
+    snprintf(elapsed_text, sizeof(elapsed_text), "%ds", (int)elapsed);
+  } else {
+    format_duration_hours_minutes(elapsed, elapsed_text, sizeof(elapsed_text));
+  }
 
   snprintf(s_running_edit_start_text, sizeof(s_running_edit_start_text), "Start %s", start_text);
   snprintf(s_running_edit_elapsed_text, sizeof(s_running_edit_elapsed_text), "Elapsed %s", elapsed_text);
