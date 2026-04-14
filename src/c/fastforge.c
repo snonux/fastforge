@@ -574,14 +574,13 @@ static void refresh_timer_view_layers(void) {
 
 static void refresh_timer_view_idle(void) {
   apply_timer_theme(false);
-  snprintf(s_title_text, sizeof(s_title_text), "NO FAST RUNNING");
+  /* '*' suffix on the title indicates developer mode is active. */
+  snprintf(s_title_text, sizeof(s_title_text),
+           debug_controls_available() ? "NO FAST RUNNING*" : "NO FAST RUNNING");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
   snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
            global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
   snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-  if (debug_controls_available()) {
-    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: -- [DEV]");
-  }
   text_layer_set_text(s_hint_layer, "SELECT Start\nDOWN Menu");
 }
 
@@ -590,12 +589,14 @@ static void refresh_timer_view_running(time_t elapsed) {
   uint32_t target_seconds = current_fast.target_minutes * 60;
   bool goal_reached = timer_goal_reached_for_elapsed(elapsed);
   apply_timer_theme(goal_reached);
+  /* '*' appended to title when developer mode is active. */
+  bool dev = debug_controls_available();
   if (target_seconds > 0) {
     time_t remaining = (time_t)target_seconds - elapsed;
     if (remaining > 0) {
-      snprintf(s_title_text, sizeof(s_title_text), "COUNTDOWN");
+      snprintf(s_title_text, sizeof(s_title_text), dev ? "COUNTDOWN*" : "COUNTDOWN");
     } else {
-      snprintf(s_title_text, sizeof(s_title_text), "GOAL REACHED");
+      snprintf(s_title_text, sizeof(s_title_text), dev ? "GOAL REACHED*" : "GOAL REACHED");
     }
     format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     char elapsed_text[16];
@@ -603,19 +604,14 @@ static void refresh_timer_view_running(time_t elapsed) {
     snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
              elapsed_text, streak_data.current_streak, streak_data.longest_streak);
   } else {
-    snprintf(s_title_text, sizeof(s_title_text), "ELAPSED");
+    snprintf(s_title_text, sizeof(s_title_text), dev ? "ELAPSED*" : "ELAPSED");
     format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
              streak_data.current_streak, streak_data.longest_streak);
   }
 
-  if (debug_controls_available()) {
-    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s [DEV]",
-             stage_text_for_elapsed(elapsed));
-  } else {
-    snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s",
-             stage_text_for_elapsed(elapsed));
-  }
+  snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s",
+           stage_text_for_elapsed(elapsed));
   text_layer_set_text(s_hint_layer, "UP Edit  SEL Stop\nDOWN Menu");
 }
 
