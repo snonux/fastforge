@@ -74,6 +74,7 @@ static TextLayer *s_settings_hint_layer;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
+static TextLayer *s_history_title_layer;
 static TextLayer *s_stats_title_layer;
 TextLayer *s_stats_body_layer;
 static TextLayer *s_stats_hint_layer;
@@ -101,6 +102,7 @@ static char s_settings_dev_text[32];
 #endif
 static char s_menu_stop_subtitle[32];
 static char s_menu_cancel_subtitle[32];
+static char s_history_title_text[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
 static char s_placeholder_hint_text[24];
@@ -754,7 +756,8 @@ static int16_t history_menu_get_header_height(MenuLayer *menu_layer, uint16_t se
   (void)menu_layer;
   (void)section_index;
   (void)data;
-  return MENU_CELL_BASIC_HEADER_HEIGHT;
+  /* No section header — info is shown in the fixed title layer above the menu. */
+  return 0;
 }
 
 static int16_t history_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
@@ -765,19 +768,20 @@ static int16_t history_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *ce
 }
 
 static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
+  /* Section header is unused — all header content lives in s_history_title_layer. */
+  (void)ctx;
+  (void)cell_layer;
   (void)section_index;
   (void)data;
-  char header_text[40];
-  GRect bounds = layer_get_bounds(cell_layer);
-  snprintf(header_text, sizeof(header_text), "History %d  S:%u/%u",
+}
+
+/* Update the fixed title bar with current history count and streak info. */
+static void refresh_history_title(void) {
+  if (!s_history_title_layer) return;
+  snprintf(s_history_title_text, sizeof(s_history_title_text),
+           "HISTORY %d  S:%u/%u",
            history_count, streak_data.current_streak, streak_data.longest_streak);
-  graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, header_text,
-                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(4, 0, bounds.size.w - 8, bounds.size.h),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  text_layer_set_text(s_history_title_layer, s_history_title_text);
 }
 
 static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
@@ -1582,15 +1586,24 @@ static void history_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
-  GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
+
+  /* Fixed title bar: "HISTORY N  S:cur/max" — matches style of other windows. */
+  int16_t title_h = 26;
+  s_history_title_layer = create_text_layer(GRect(ox, oy + 4, cw, title_h),
+                                            GTextAlignmentCenter,
+                                            FONT_KEY_GOTHIC_24_BOLD,
+                                            GColorBlack, GColorClear, false);
+  add_text_layer(window_layer, s_history_title_layer);
+  refresh_history_title();
+
+  /* Menu starts below the title; leave symmetrical vertical inset at the bottom. */
+  int16_t title_offset = oy + 4 + title_h + 2;
+  GRect menu_bounds = GRect(ox, title_offset, cw, bounds.size.h - title_offset - oy);
 
   s_history_menu_layer = menu_layer_create(menu_bounds);
-  menu_layer_set_normal_colors(s_history_menu_layer,
-                               GColorWhite,
-                               GColorBlack);
-  menu_layer_set_highlight_colors(s_history_menu_layer,
-                                  GColorBlack,
-                                  GColorWhite);
+  menu_layer_set_normal_colors(s_history_menu_layer, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(s_history_menu_layer, GColorBlack, GColorWhite);
   menu_layer_set_click_config_onto_window(s_history_menu_layer, window);
   menu_layer_set_callbacks(s_history_menu_layer, NULL, (MenuLayerCallbacks) {
     .get_num_sections = history_menu_get_num_sections,
@@ -1608,12 +1621,15 @@ static void history_window_load(Window *window) {
 
 static void history_window_unload(Window *window) {
   (void)window;
+  text_layer_destroy(s_history_title_layer);
+  s_history_title_layer = NULL;
   menu_layer_destroy(s_history_menu_layer);
   s_history_menu_layer = NULL;
 }
 
 static void history_window_appear(Window *window) {
   (void)window;
+  refresh_history_title();
   history_menu_reload();
 }
 
