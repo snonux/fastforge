@@ -310,6 +310,20 @@ static Window *create_window_with_handlers(WindowHandlers handlers,
   return window;
 }
 
+/* Layout helper: content origin and width for the current display shape.
+ * On round displays (chalk, gabbro) the screen is circular, so we inset
+ * 1/6 of the display width on every side to keep all text within the
+ * visible circle.  On rectangular displays the inset is zero. */
+typedef struct { int16_t ox; int16_t oy; int16_t cw; } ContentRect;
+static ContentRect content_rect(GRect bounds) {
+#ifdef PBL_ROUND
+  int16_t inset = bounds.size.w / 6;
+  return (ContentRect){ inset, inset, bounds.size.w - 2 * inset };
+#else
+  return (ContentRect){ 0, 0, bounds.size.w };
+#endif
+}
+
 static uint16_t clamp_default_target_minutes(int target_minutes) {
   if (target_minutes < 8 * 60) {
     return 8 * 60;
@@ -1414,7 +1428,9 @@ static void goal_background_update_proc(Layer *layer, GContext *ctx) {
 static void menu_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
-  s_main_menu_layer = simple_menu_layer_create(bounds, window, s_main_menu_sections, 1, NULL);
+  ContentRect cr = content_rect(bounds);
+  GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
+  s_main_menu_layer = simple_menu_layer_create(menu_bounds, window, s_main_menu_sections, 1, NULL);
   layer_add_child(window_layer, simple_menu_layer_get_layer(s_main_menu_layer));
   sync_main_menu_state();
 }
@@ -1429,30 +1445,32 @@ static void menu_window_unload(Window *window) {
 static void timer_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_title_layer = create_text_layer(GRect(0, 4, bounds.size.w, 24),
+  s_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 24),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_18_BOLD,
                                     GColorBlack, GColorClear, false);
   /* GOTHIC_28_BOLD fits all 8-char "HH:MM:SS" and 9-char "-HH:MM:SS" overtime
    * strings without truncation on the 144-px Basalt display. */
-  s_timer_layer = create_text_layer(GRect(0, 28, bounds.size.w, 42),
+  s_timer_layer = create_text_layer(GRect(ox, oy + 28, cw, 42),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_28_BOLD,
                                     GColorBlack, GColorClear, false);
-  s_detail_layer = create_text_layer(GRect(0, 76, bounds.size.w, 24),
+  s_detail_layer = create_text_layer(GRect(ox, oy + 76, cw, 24),
                                      GTextAlignmentCenter,
                                      FONT_KEY_GOTHIC_18,
                                      GColorBlack, GColorClear, false);
 
-  s_progress_layer = layer_create(GRect(10, 104, bounds.size.w - 20, 12));
+  s_progress_layer = layer_create(GRect(ox + 6, oy + 104, cw - 12, 12));
   layer_set_update_proc(s_progress_layer, timer_progress_update_proc);
 
-  s_stage_layer = create_text_layer(GRect(0, 118, bounds.size.w, 20),
+  s_stage_layer = create_text_layer(GRect(ox, oy + 118, cw, 20),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_18_BOLD,
                                     GColorBlack, GColorClear, false);
-  s_hint_layer = create_text_layer(GRect(0, 138, bounds.size.w, 28),
+  s_hint_layer = create_text_layer(GRect(ox, oy + 138, cw, 28),
                                    GTextAlignmentCenter,
                                    FONT_KEY_GOTHIC_14,
                                    GColorBlack, GColorClear, true);
@@ -1486,30 +1504,33 @@ static void timer_window_unload(Window *window) {
 static void goal_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
+  /* Background fills the entire display (including rounded corners). */
   s_goal_background_layer = layer_create(bounds);
   layer_set_update_proc(s_goal_background_layer, goal_background_update_proc);
   layer_add_child(window_layer, s_goal_background_layer);
 
-  s_goal_title_layer = create_text_layer(GRect(0, 20, bounds.size.w, 30),
+  s_goal_title_layer = create_text_layer(GRect(ox, oy + 20, cw, 30),
                                          GTextAlignmentCenter,
                                          FONT_KEY_GOTHIC_28_BOLD,
                                          theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_title_layer, "GOAL HIT");
 
-  s_goal_time_layer = create_text_layer(GRect(0, 56, bounds.size.w, 26),
+  s_goal_time_layer = create_text_layer(GRect(ox, oy + 56, cw, 26),
                                         GTextAlignmentCenter,
                                         FONT_KEY_GOTHIC_24_BOLD,
                                         theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_time_layer, "Elapsed 00:00:00");
 
-  s_goal_stage_layer = create_text_layer(GRect(0, 84, bounds.size.w, 24),
+  s_goal_stage_layer = create_text_layer(GRect(ox, oy + 84, cw, 24),
                                          GTextAlignmentCenter,
                                          FONT_KEY_GOTHIC_18_BOLD,
                                          theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_stage_layer, "Stage: --");
 
-  s_goal_hint_layer = create_text_layer(GRect(0, 120, bounds.size.w, 42),
+  s_goal_hint_layer = create_text_layer(GRect(ox, oy + 120, cw, 42),
                                         GTextAlignmentCenter,
                                         FONT_KEY_GOTHIC_14_BOLD,
                                         theme_goal_text_color(), theme_goal_background_color(), true);
@@ -1540,7 +1561,9 @@ static void goal_window_unload(Window *window) {
 static void presets_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
-  s_presets_menu_layer = simple_menu_layer_create(bounds, window, s_presets_menu_sections, 1, NULL);
+  ContentRect cr = content_rect(bounds);
+  GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
+  s_presets_menu_layer = simple_menu_layer_create(menu_bounds, window, s_presets_menu_sections, 1, NULL);
   layer_add_child(window_layer, simple_menu_layer_get_layer(s_presets_menu_layer));
 }
 
@@ -1553,8 +1576,10 @@ static void presets_window_unload(Window *window) {
 static void history_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
 
-  s_history_menu_layer = menu_layer_create(bounds);
+  s_history_menu_layer = menu_layer_create(menu_bounds);
   menu_layer_set_normal_colors(s_history_menu_layer,
                                GColorWhite,
                                GColorBlack);
@@ -1590,28 +1615,30 @@ static void history_window_appear(Window *window) {
 static void history_edit_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_history_edit_title_layer = create_text_layer(GRect(4, 4, bounds.size.w - 8, 24),
+  s_history_edit_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 24),
                                                  GTextAlignmentCenter,
                                                  FONT_KEY_GOTHIC_18_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_start_layer = create_text_layer(GRect(6, 30, bounds.size.w - 12, 22),
+  s_history_edit_start_layer = create_text_layer(GRect(ox, oy + 30, cw, 22),
                                                  GTextAlignmentLeft,
                                                  FONT_KEY_GOTHIC_18_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_end_layer = create_text_layer(GRect(6, 54, bounds.size.w - 12, 22),
+  s_history_edit_end_layer = create_text_layer(GRect(ox, oy + 54, cw, 22),
                                                GTextAlignmentLeft,
                                                FONT_KEY_GOTHIC_18_BOLD,
                                                GColorBlack, GColorClear, false);
-  s_history_edit_duration_layer = create_text_layer(GRect(6, 82, bounds.size.w - 12, 22),
+  s_history_edit_duration_layer = create_text_layer(GRect(ox, oy + 82, cw, 22),
                                                     GTextAlignmentLeft,
                                                     FONT_KEY_GOTHIC_18_BOLD,
                                                     GColorBlack, GColorClear, false);
-  s_history_edit_stage_layer = create_text_layer(GRect(6, 106, bounds.size.w - 12, 22),
+  s_history_edit_stage_layer = create_text_layer(GRect(ox, oy + 106, cw, 22),
                                                  GTextAlignmentLeft,
                                                  FONT_KEY_GOTHIC_18_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_hint_layer = create_text_layer(GRect(4, 130, bounds.size.w - 8, 34),
+  s_history_edit_hint_layer = create_text_layer(GRect(ox, oy + 130, cw, 34),
                                                 GTextAlignmentCenter,
                                                 FONT_KEY_GOTHIC_14,
                                                 GColorBlack, GColorClear, false);
@@ -1649,24 +1676,26 @@ static void history_edit_window_appear(Window *window) {
 static void running_edit_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_running_edit_title_layer = create_text_layer(GRect(4, 4, bounds.size.w, 26),
+  s_running_edit_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 26),
                                                  GTextAlignmentCenter,
                                                  FONT_KEY_GOTHIC_24_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_running_edit_start_layer = create_text_layer(GRect(6, 36, bounds.size.w - 12, 24),
+  s_running_edit_start_layer = create_text_layer(GRect(ox, oy + 36, cw, 24),
                                                  GTextAlignmentLeft,
                                                  FONT_KEY_GOTHIC_18_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_running_edit_elapsed_layer = create_text_layer(GRect(6, 62, bounds.size.w - 12, 24),
+  s_running_edit_elapsed_layer = create_text_layer(GRect(ox, oy + 62, cw, 24),
                                                     GTextAlignmentLeft,
                                                     FONT_KEY_GOTHIC_18_BOLD,
                                                     GColorBlack, GColorClear, false);
-  s_running_edit_goal_layer = create_text_layer(GRect(6, 88, bounds.size.w - 12, 34),
+  s_running_edit_goal_layer = create_text_layer(GRect(ox, oy + 88, cw, 34),
                                                 GTextAlignmentLeft,
                                                 FONT_KEY_GOTHIC_18,
                                                 GColorBlack, GColorClear, false);
-  s_running_edit_hint_layer = create_text_layer(GRect(4, 124, bounds.size.w - 8, 40),
+  s_running_edit_hint_layer = create_text_layer(GRect(ox, oy + 124, cw, 40),
                                                 GTextAlignmentCenter,
                                                 FONT_KEY_GOTHIC_14,
                                                 GColorBlack, GColorClear, false);
@@ -1701,19 +1730,21 @@ static void running_edit_window_appear(Window *window) {
 static void stats_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_stats_title_layer = create_text_layer(GRect(4, 8, bounds.size.w - 8, 26),
+  s_stats_title_layer = create_text_layer(GRect(ox, oy + 8, cw, 26),
                                           GTextAlignmentCenter,
                                           FONT_KEY_GOTHIC_24_BOLD,
                                           GColorBlack, GColorClear, false);
   text_layer_set_text(s_stats_title_layer, "STATISTICS");
 
-  s_stats_body_layer = create_text_layer(GRect(6, 40, bounds.size.w - 12, 98),
+  s_stats_body_layer = create_text_layer(GRect(ox, oy + 40, cw, 98),
                                          GTextAlignmentLeft,
                                          FONT_KEY_GOTHIC_18_BOLD,
                                          GColorBlack, GColorClear, false);
 
-  s_stats_hint_layer = create_text_layer(GRect(4, 140, bounds.size.w - 8, 24),
+  s_stats_hint_layer = create_text_layer(GRect(ox, oy + 140, cw, 24),
                                          GTextAlignmentCenter,
                                          FONT_KEY_GOTHIC_14_BOLD,
                                          GColorBlack, GColorClear, false);
@@ -1743,25 +1774,27 @@ static void stats_window_appear(Window *window) {
 static void settings_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_settings_title_layer = create_text_layer(GRect(0, 6, bounds.size.w, 26),
+  s_settings_title_layer = create_text_layer(GRect(ox, oy + 6, cw, 26),
                                              GTextAlignmentCenter,
                                              FONT_KEY_GOTHIC_24_BOLD,
                                              GColorBlack, GColorClear, false);
   text_layer_set_text(s_settings_title_layer, "SETTINGS");
 
-  s_settings_target_layer = create_text_layer(GRect(6, 42, bounds.size.w - 12, 24),
+  s_settings_target_layer = create_text_layer(GRect(ox, oy + 42, cw, 24),
                                               GTextAlignmentCenter,
                                               FONT_KEY_GOTHIC_18_BOLD,
                                               GColorBlack, GColorClear, false);
 
-  s_settings_hint_layer = create_text_layer(GRect(6, 94, bounds.size.w - 12, 54),
+  s_settings_hint_layer = create_text_layer(GRect(ox, oy + 94, cw, 54),
                                             GTextAlignmentCenter,
                                             FONT_KEY_GOTHIC_14,
                                             GColorBlack, GColorClear, true);
 
 #ifdef DEBUG
-  s_settings_dev_layer = create_text_layer(GRect(6, 76, bounds.size.w - 12, 18),
+  s_settings_dev_layer = create_text_layer(GRect(ox, oy + 76, cw, 18),
                                            GTextAlignmentCenter,
                                            FONT_KEY_GOTHIC_14_BOLD,
                                            GColorBlack, GColorClear, false);
@@ -1798,16 +1831,18 @@ static void settings_window_appear(Window *window) {
 static void detail_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_placeholder_title_layer = create_text_layer(GRect(4, 8, bounds.size.w - 8, 26),
+  s_placeholder_title_layer = create_text_layer(GRect(ox, oy + 8, cw, 26),
                                                 GTextAlignmentCenter,
                                                 FONT_KEY_GOTHIC_24_BOLD,
                                                 GColorBlack, GColorClear, false);
-  s_placeholder_body_layer = create_text_layer(GRect(6, 40, bounds.size.w - 12, 98),
+  s_placeholder_body_layer = create_text_layer(GRect(ox, oy + 40, cw, 98),
                                                GTextAlignmentCenter,
                                                FONT_KEY_GOTHIC_18,
                                                GColorBlack, GColorClear, false);
-  s_placeholder_hint_layer = create_text_layer(GRect(4, 140, bounds.size.w - 8, 24),
+  s_placeholder_hint_layer = create_text_layer(GRect(ox, oy + 140, cw, 24),
                                                GTextAlignmentCenter,
                                                FONT_KEY_GOTHIC_14_BOLD,
                                                GColorBlack, GColorClear, false);
@@ -1959,7 +1994,10 @@ static void init_primary_windows(void) {
     .appear = menu_window_appear,
     .unload = menu_window_unload
   }, NULL);
-  window_set_background_color(s_menu_window, theme_surface_background_color());
+  /* On round displays the menu is inset within the circle; use white so the
+   * background outside the menu layer matches the menu's own white cells. */
+  window_set_background_color(s_menu_window,
+                              PBL_IF_ROUND_ELSE(GColorWhite, theme_surface_background_color()));
 
   s_timer_window = create_window_with_handlers((WindowHandlers) {
     .load = timer_window_load,
@@ -1977,7 +2015,8 @@ static void init_primary_windows(void) {
     .load = presets_window_load,
     .unload = presets_window_unload
   }, NULL);
-  window_set_background_color(s_presets_window, theme_surface_background_color());
+  window_set_background_color(s_presets_window,
+                              PBL_IF_ROUND_ELSE(GColorWhite, theme_surface_background_color()));
 }
 
 static void init_history_windows(void) {
