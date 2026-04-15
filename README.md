@@ -6,7 +6,7 @@ FastForge is a Pebble watchapp for intermittent fasting tracking, built with the
 
 | Pebble Round 2 — Menu | Pebble Round 2 — Countdown | Pebble Round 2 — History | Pebble Time — Countdown |
 |:---:|:---:|:---:|:---:|
-| ![Menu](screenshots/gabbro_01_menu.png) | ![Countdown](screenshots/gabbro_02_countdown.png) | ![History](screenshots/gabbro_03_history.png) | ![Basalt countdown](screenshots/basalt_01_countdown.png) |
+| <img src="screenshots/gabbro_01_menu.png" width="130"> | <img src="screenshots/gabbro_02_countdown.png" width="130"> | <img src="screenshots/gabbro_03_history.png" width="130"> | <img src="screenshots/basalt_01_countdown.png" width="130"> |
 
 ## Day-1 Setup (Fedora + Rebble SDK 4.9+)
 
