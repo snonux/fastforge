@@ -244,12 +244,17 @@ static GColor theme_goal_text_color(void) {
 }
 
 static GColor theme_timer_background_color(bool goal_reached) {
-  return goal_reached ? theme_goal_background_color()
-                      : theme_surface_background_color();
+  if (goal_reached) return theme_goal_background_color();
+  /* Blue background while countdown is active; mint green when idle (no fast). */
+  if (fast_is_running()) return is_color_platform() ? GColorVividCerulean : GColorWhite;
+  return theme_surface_background_color();
 }
 
 static GColor theme_timer_text_color(bool goal_reached) {
-  return goal_reached ? theme_goal_text_color() : GColorBlack;
+  if (goal_reached) return theme_goal_text_color();
+  /* White text on blue countdown background for readability. */
+  if (fast_is_running()) return is_color_platform() ? GColorWhite : GColorBlack;
+  return GColorBlack;
 }
 
 static GColor theme_progress_track_color(void) {
