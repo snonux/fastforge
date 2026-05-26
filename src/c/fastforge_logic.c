@@ -1,16 +1,7 @@
 #include "fastforge_logic.h"
 
-#ifdef time_t
-#undef time_t
-#endif
-#undef _TIME_H_
-#include <time.h>
-typedef time_t ff_sys_time_t;
-#define time_t long
-
 #include <stdio.h>
 #include <stdint.h>
-
 
 time_t entry_duration_seconds(const FastEntry *entry) {
   if (!entry || entry->start_time == 0 || entry->end_time <= entry->start_time) {
@@ -63,27 +54,6 @@ void format_duration_hours_minutes(time_t seconds, char *buffer, size_t size) {
   int minutes = (int)((seconds % 3600) / 60);
   snprintf(buffer, size, "%dh %02dm", hours, minutes);
 }
-
-time_t local_day_start(time_t timestamp) {
-  if (timestamp <= 0) {
-    return 0;
-  }
-
-  ff_sys_time_t sys_timestamp = (ff_sys_time_t)timestamp;
-  struct tm *tm_info = localtime(&sys_timestamp);
-  if (!tm_info) {
-    return 0;
-  }
-
-  struct tm tm_copy = *tm_info;
-  tm_copy.tm_hour = 0;
-  tm_copy.tm_min = 0;
-  tm_copy.tm_sec = 0;
-  tm_copy.tm_isdst = -1;
-  return (time_t)mktime(&tm_copy);
-}
-
-
 
 /* Convert a Unix timestamp to a UTC day number (seconds since epoch / 86400).
  * Avoids localtime()/mktime() calls that consume significant stack depth. */

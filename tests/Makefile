@@ -14,6 +14,7 @@ SRCS := \
 	$(UNITY_DIR)/unity.c \
 	$(SRC_DIR)/fastforge_logic.c \
 	$(SRC_DIR)/fastforge_csv.c \
+	$(SRC_DIR)/fastforge_time.c \
 	$(wildcard test_*.c)
 
 INCLUDES := -I. -I$(UNITY_DIR) -I$(SRC_DIR)
