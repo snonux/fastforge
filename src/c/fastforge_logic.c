@@ -133,6 +133,25 @@ void fastforge_streak_recompute(const FastEntry *entries, int count, time_t now,
   out->longest_streak = longest;
 }
 
+/* How many history entries belong to persist chunk `chunk` for a history of
+ * `history_count` entries. Chunks are filled front to back, HISTORY_ENTRIES_PER_CHUNK
+ * entries each, so that no chunk exceeds the 256-byte persist value limit.
+ * Returns 0 for chunks past the end of the history (and for invalid input). */
+int history_chunk_entry_count(int history_count, int chunk) {
+  if (history_count <= 0 || chunk < 0 || chunk >= HISTORY_CHUNK_COUNT) {
+    return 0;
+  }
+  if (history_count > MAX_FASTS) {
+    history_count = MAX_FASTS;
+  }
+
+  int remaining = history_count - chunk * HISTORY_ENTRIES_PER_CHUNK;
+  if (remaining <= 0) {
+    return 0;
+  }
+  return (remaining > HISTORY_ENTRIES_PER_CHUNK) ? HISTORY_ENTRIES_PER_CHUNK : remaining;
+}
+
 bool running_fast_is_at_target(const FastEntry *entry, time_t now) {
   if (!entry || entry->start_time == 0 || entry->end_time != 0 || entry->target_minutes == 0) {
     return false;

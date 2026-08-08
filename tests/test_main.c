@@ -10,6 +10,11 @@ void test_streak_single_recent_completion_sets_current_and_longest(void);
 void test_streak_longest_can_exceed_current_when_sequence_breaks(void);
 void test_streak_drops_to_zero_after_missing_more_than_one_day(void);
 
+void test_history_chunk_fits_into_one_persist_value(void);
+void test_history_chunks_cover_the_whole_history_array(void);
+void test_history_chunk_entry_count_splits_history(void);
+void test_history_chunk_entry_count_rejects_out_of_range_input(void);
+
 void test_csv_append_text_plain_and_escaped_values(void);
 void test_csv_append_int_appends_number_text(void);
 void test_format_history_csv_header_and_row_with_escaping(void);
@@ -30,6 +35,11 @@ int main(void) {
   RUN_TEST(test_streak_single_recent_completion_sets_current_and_longest);
   RUN_TEST(test_streak_longest_can_exceed_current_when_sequence_breaks);
   RUN_TEST(test_streak_drops_to_zero_after_missing_more_than_one_day);
+
+  RUN_TEST(test_history_chunk_fits_into_one_persist_value);
+  RUN_TEST(test_history_chunks_cover_the_whole_history_array);
+  RUN_TEST(test_history_chunk_entry_count_splits_history);
+  RUN_TEST(test_history_chunk_entry_count_rejects_out_of_range_input);
 
   RUN_TEST(test_csv_append_text_plain_and_escaped_values);
   RUN_TEST(test_csv_append_int_appends_number_text);

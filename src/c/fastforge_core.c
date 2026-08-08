@@ -78,9 +78,32 @@ bool refresh_streak_if_day_changed(void) {
   return true;
 }
 
+/* Persist the history array in chunks of at most PERSIST_DATA_MAX_LENGTH bytes.
+ *
+ * A single persist value cannot exceed 256 bytes, and persist_write_data()
+ * fails outright rather than truncating. Writing the whole array under one key
+ * therefore stopped working once the 6th fast was completed: the blob stayed
+ * stale while KEY_HISTORY_COUNT kept growing, so the next launch saw a size
+ * mismatch and wiped the entire history.
+ *
+ * Chunks past history_count may still hold entries from a longer history. They
+ * are never read (loading stops at history_count) and are overwritten as the
+ * history grows again, so deleting them on every save would be wasted work. */
+static void save_history_entries(void) {
+  for (int chunk = 0; chunk < HISTORY_CHUNK_COUNT; chunk++) {
+    const int count = history_chunk_entry_count(history_count, chunk);
+    if (count == 0) {
+      break;
+    }
+    persist_write_data(KEY_HISTORY_CHUNK_BASE + chunk,
+                       &history[chunk * HISTORY_ENTRIES_PER_CHUNK],
+                       sizeof(FastEntry) * (size_t)count);
+  }
+}
+
 void save_all_data(void) {
   persist_write_int(KEY_HISTORY_COUNT, history_count);
-  persist_write_data(KEY_HISTORY_DATA, history, sizeof(FastEntry) * history_count);
+  save_history_entries();
   persist_write_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
   persist_write_int(KEY_TARGET_MIN, global_target_minutes);
   persist_write_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
@@ -105,18 +128,57 @@ static void reset_loaded_data(void) {
 #endif
 }
 
+/* Read back the chunks written by save_history_entries(). Returns false if any
+ * chunk is missing or shorter than expected, so the caller can fall back to the
+ * legacy layout or start from an empty history. */
+static bool load_history_chunks(void) {
+  for (int chunk = 0; chunk < HISTORY_CHUNK_COUNT; chunk++) {
+    const int count = history_chunk_entry_count(history_count, chunk);
+    if (count == 0) {
+      break;
+    }
+    const uint32_t key = KEY_HISTORY_CHUNK_BASE + chunk;
+    const int expected_size = (int)(sizeof(FastEntry) * (size_t)count);
+    if (!persist_exists(key) ||
+        persist_read_data(key, &history[chunk * HISTORY_ENTRIES_PER_CHUNK],
+                          expected_size) != expected_size) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Migrate a history written by app <= 1.1, which stored the whole array under
+ * the single KEY_HISTORY_DATA key. Only the entries that fitted into one
+ * persist value were ever really stored, so recover those and drop the rest;
+ * the next save_all_data() rewrites everything in the chunked layout. */
+static bool load_legacy_history(void) {
+  if (!persist_exists(KEY_HISTORY_DATA)) {
+    return false;
+  }
+  if (history_count > HISTORY_ENTRIES_PER_CHUNK) {
+    history_count = HISTORY_ENTRIES_PER_CHUNK;
+  }
+  const int expected_size = (int)(sizeof(FastEntry) * (size_t)history_count);
+  return persist_read_data(KEY_HISTORY_DATA, history, expected_size) == expected_size;
+}
+
+static void load_persisted_history(void) {
+  if (history_count <= 0) {
+    return;
+  }
+  if (load_history_chunks() || load_legacy_history()) {
+    return;
+  }
+  history_count = 0;
+  memset(history, 0, sizeof(history));
+}
+
 static void load_persisted_base_data(void) {
   if (persist_exists(KEY_HISTORY_COUNT)) {
     history_count = clamp_history_count(persist_read_int(KEY_HISTORY_COUNT));
   }
-  if (history_count > 0 && persist_exists(KEY_HISTORY_DATA)) {
-    const int expected_size = sizeof(FastEntry) * history_count;
-    const int read_size = persist_read_data(KEY_HISTORY_DATA, history, expected_size);
-    if (read_size != expected_size) {
-      history_count = 0;
-      memset(history, 0, sizeof(history));
-    }
-  }
+  load_persisted_history();
   if (persist_exists(KEY_CURRENT_FAST)) {
     const int read_size = persist_read_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
     if (read_size != (int)sizeof(FastEntry)) {
