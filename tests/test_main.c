@@ -15,11 +15,6 @@ void test_history_chunks_cover_the_whole_history_array(void);
 void test_history_chunk_entry_count_splits_history(void);
 void test_history_chunk_entry_count_rejects_out_of_range_input(void);
 
-void test_csv_append_text_plain_and_escaped_values(void);
-void test_csv_append_int_appends_number_text(void);
-void test_format_history_csv_header_and_row_with_escaping(void);
-void test_format_history_csv_row_null_entry_returns_empty(void);
-
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -40,11 +35,6 @@ int main(void) {
   RUN_TEST(test_history_chunks_cover_the_whole_history_array);
   RUN_TEST(test_history_chunk_entry_count_splits_history);
   RUN_TEST(test_history_chunk_entry_count_rejects_out_of_range_input);
-
-  RUN_TEST(test_csv_append_text_plain_and_escaped_values);
-  RUN_TEST(test_csv_append_int_appends_number_text);
-  RUN_TEST(test_format_history_csv_header_and_row_with_escaping);
-  RUN_TEST(test_format_history_csv_row_null_entry_returns_empty);
 
   return UNITY_END();
 }

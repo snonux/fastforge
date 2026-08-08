@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "message_keys.auto.h"
-
 enum {
   MAIN_MENU_INDEX_START_NEW = 0,
   MAIN_MENU_INDEX_RESUME_LAST = 1,  /* undo an accidental fast_stop */
@@ -14,9 +12,8 @@ enum {
   MAIN_MENU_INDEX_HISTORY = 5,
   MAIN_MENU_INDEX_STATS = 6,
   MAIN_MENU_INDEX_SETTINGS = 7,
-  MAIN_MENU_INDEX_BACKUP = 8,
-  MAIN_MENU_INDEX_ABOUT = 9,
-  MAIN_MENU_ITEM_COUNT = 10
+  MAIN_MENU_INDEX_ABOUT = 8,
+  MAIN_MENU_ITEM_COUNT = 9
 };
 
 enum {
@@ -1269,12 +1266,6 @@ static void menu_settings_callback(int index, void *context) {
   safe_push_window(s_settings_window, true);
 }
 
-static void menu_backup_callback(int index, void *context) {
-  (void)index;
-  (void)context;
-  request_history_export();
-}
-
 /* Show author credit and source code location in the shared detail window. */
 static void menu_about_callback(int index, void *context) {
   (void)index;
@@ -2026,11 +2017,6 @@ static void configure_main_menu_items(void) {
     .subtitle = "Defaults and behavior",
     .callback = menu_settings_callback
   };
-  s_main_menu_items[MAIN_MENU_INDEX_BACKUP] = (SimpleMenuItem) {
-    .title = "Backup to Phone",
-    .subtitle = "Export history data",
-    .callback = menu_backup_callback
-  };
   s_main_menu_items[MAIN_MENU_INDEX_ABOUT] = (SimpleMenuItem) {
     .title = "About",
     .subtitle = "Author and source",
@@ -2218,14 +2204,6 @@ static void destroy_windows(void) {
 
 static void init(void) {
   load_all_data();
-#ifndef PBL_PLATFORM_APLITE
-  AppMessageResult app_message_result = app_message_open(128, 128);
-  if (app_message_result != APP_MSG_OK) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "app_message_open failed (%d)", app_message_result);
-  } else {
-    fastforge_history_register_app_message_handlers();
-  }
-#endif
   tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   configure_main_menu_items();
   configure_preset_items();
@@ -2246,9 +2224,6 @@ static void deinit(void) {
     app_timer_cancel(alarm_timer);
     alarm_timer = NULL;
   }
-#ifndef PBL_PLATFORM_APLITE
-  fastforge_history_stop_export();
-#endif
   target_time = 0;
   save_all_data();
   tick_timer_service_unsubscribe();

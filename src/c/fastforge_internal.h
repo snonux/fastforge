@@ -31,12 +31,9 @@ int history_note_tag_count(void);
 void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size);
 void refresh_stats_window_content(void);
 void history_menu_reload(void);
-void request_history_export(void);
 void refresh_all_ui_state(void);
 void show_goal_reached_window(void);
 void show_placeholder_window(const char *title, const char *body, const char *hint);
-void fastforge_history_register_app_message_handlers(void);
-void fastforge_history_stop_export(void);
 void fastforge_force_goal_alarm(void);
 void fastforge_reschedule_alarm_for_seconds(uint32_t seconds);
 

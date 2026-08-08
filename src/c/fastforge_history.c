@@ -1,10 +1,7 @@
 #include "fastforge_internal.h"
-#include "fastforge_csv.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#include "message_keys.auto.h"
 
 static const char *const s_note_tags[] = {
   "",
@@ -18,17 +15,6 @@ static const char *const s_note_tags[] = {
   "high energy",
   "rough day"
 };
-
-#ifndef PBL_PLATFORM_APLITE
-typedef struct {
-  bool active;
-  int next_row;
-  int snapshot_count;
-  FastEntry snapshot[MAX_FASTS];
-} HistoryExportState;
-
-static HistoryExportState s_history_export = {0};
-#endif
 
 static char s_stats_body_text[160];
 
@@ -263,145 +249,3 @@ void history_menu_reload(void) {
     menu_layer_reload_data(s_history_menu_layer);
   }
 }
-
-#ifndef PBL_PLATFORM_APLITE
-static void stop_history_export(void) {
-  s_history_export.active = false;
-  s_history_export.next_row = 0;
-  s_history_export.snapshot_count = 0;
-  memset(s_history_export.snapshot, 0, sizeof(s_history_export.snapshot));
-}
-
-static const char *history_export_status_for_row(void) {
-  if (s_history_export.next_row == 0) {
-    return s_history_export.snapshot_count == 0 ? "EXPORT_COMPLETE" : "EXPORT_STARTED";
-  }
-  if (s_history_export.next_row >= s_history_export.snapshot_count) {
-    return "EXPORT_COMPLETE";
-  }
-  return "EXPORT_ROW";
-}
-
-static void history_export_send_message(const char *row_text) {
-  DictionaryIterator *outbox = NULL;
-  AppMessageResult result = app_message_outbox_begin(&outbox);
-  if (result != APP_MSG_OK || !outbox) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to start history export outbox (%d)", result);
-    stop_history_export();
-    return;
-  }
-
-  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_SEQUENCE, s_history_export.next_row);
-  dict_write_int32(outbox, MESSAGE_KEY_EXPORT_TOTAL, s_history_export.snapshot_count + 1);
-  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_ROW, row_text ? row_text : "");
-  dict_write_cstring(outbox, MESSAGE_KEY_EXPORT_STATUS, history_export_status_for_row());
-  result = app_message_outbox_send();
-  if (result != APP_MSG_OK) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to queue history export message (%d)", result);
-    stop_history_export();
-  }
-}
-
-static void history_export_send_next(void) {
-  if (!s_history_export.active) {
-    return;
-  }
-
-  char row_text[128];
-  if (s_history_export.next_row == 0) {
-    format_history_csv_header(row_text, sizeof(row_text));
-  } else {
-    int history_index = s_history_export.next_row - 1;
-    if (history_index < 0 || history_index >= s_history_export.snapshot_count) {
-      stop_history_export();
-      return;
-    }
-    format_history_csv_row(&s_history_export.snapshot[history_index], row_text, sizeof(row_text));
-  }
-
-  history_export_send_message(row_text);
-}
-
-static void history_export_on_sent(DictionaryIterator *iterator, void *context) {
-  (void)iterator;
-  (void)context;
-  if (!s_history_export.active) {
-    return;
-  }
-
-  s_history_export.next_row++;
-  if (s_history_export.next_row >= s_history_export.snapshot_count + 1) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "History export finished with %d rows", s_history_export.snapshot_count + 1);
-    stop_history_export();
-    return;
-  }
-
-  history_export_send_next();
-}
-
-static void history_export_on_failed(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
-  (void)iterator;
-  (void)context;
-  APP_LOG(APP_LOG_LEVEL_ERROR, "History export failed at row %d (%d)", s_history_export.next_row, reason);
-  stop_history_export();
-}
-
-static bool history_export_begin(void) {
-  if (s_history_export.active) {
-    return false;
-  }
-
-  s_history_export.active = true;
-  s_history_export.next_row = 0;
-  s_history_export.snapshot_count = history_count;
-  if (s_history_export.snapshot_count > 0) {
-    memcpy(s_history_export.snapshot, history, sizeof(FastEntry) * (size_t)s_history_export.snapshot_count);
-  }
-  history_export_send_next();
-  return true;
-}
-
-static void history_export_inbox_received(DictionaryIterator *iterator, void *context) {
-  (void)context;
-  Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_EXPORT_COMMAND);
-  if (!command_tuple || command_tuple->type != TUPLE_CSTRING) {
-    return;
-  }
-
-  if (strcmp(command_tuple->value->cstring, "EXPORT_HISTORY") == 0) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "Received export request from companion");
-    history_export_begin();
-  }
-}
-#endif
-
-void request_history_export(void) {
-#ifndef PBL_PLATFORM_APLITE
-  if (!history_export_begin()) {
-    show_placeholder_window("BACKUP BUSY",
-                            "A history export is already in progress.",
-                            "BACK Menu");
-    return;
-  }
-
-  show_placeholder_window("BACKUP TO PHONE",
-                          "CSV export started.\nCompanion stub stores the file.",
-                          "BACK Menu");
-#else
-  show_placeholder_window("BACKUP UNAVAILABLE",
-                          "AppMessage backup is disabled on Aplite.",
-                          "BACK Menu");
-#endif
-}
-
-#ifndef PBL_PLATFORM_APLITE
-void fastforge_history_register_app_message_handlers(void) {
-  app_message_register_inbox_received(history_export_inbox_received);
-  app_message_register_outbox_sent(history_export_on_sent);
-  app_message_register_outbox_failed(history_export_on_failed);
-}
-
-void fastforge_history_stop_export(void) {
-  stop_history_export();
-}
-#endif

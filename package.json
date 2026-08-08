@@ -24,13 +24,7 @@
     "watchapp": {
       "watchface": false
     },
-    "messageKeys": [
-      "EXPORT_COMMAND",
-      "EXPORT_SEQUENCE",
-      "EXPORT_TOTAL",
-      "EXPORT_ROW",
-      "EXPORT_STATUS"
-    ],
+    "messageKeys": [],
     "resources": {
       "media": []
     }
