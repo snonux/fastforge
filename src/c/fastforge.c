@@ -1516,30 +1516,37 @@ static void timer_window_load(Window *window) {
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
 #if FASTFORGE_SHOW_GOAL_CLOCK
-  /* Title and countdown move up slightly to free a row for the goal clock. */
-  const int16_t title_y = 2, timer_y = 22, detail_y = 78;
+  /* Title and countdown move up to free a full row for the goal clock. */
+  const int16_t title_y = 0, timer_y = 18, detail_y = 78;
 #else
   /* Aplite has no goal-clock row, so it keeps the original roomier spacing. */
   const int16_t title_y = 4, timer_y = 28, detail_y = 76;
 #endif
 
-  s_title_layer = create_text_layer(GRect(ox, oy + title_y, cw, 22),
+  s_title_layer = create_text_layer(GRect(ox, oy + title_y, cw, 20),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_18_BOLD,
                                     GColorBlack, GColorClear, false);
   /* GOTHIC_28_BOLD fits all 8-char "HH:MM:SS" and 9-char "-HH:MM:SS" overtime
    * strings without truncation on the 144-px Basalt display. */
-  s_timer_layer = create_text_layer(GRect(ox, oy + timer_y, cw, 36),
+  s_timer_layer = create_text_layer(GRect(ox, oy + timer_y, cw, 38),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_28_BOLD,
                                     GColorBlack, GColorClear, false);
 #if FASTFORGE_SHOW_GOAL_CLOCK
-  /* Goal wall-clock time ("Ends 14:30"). GOTHIC_18 is the largest font that
-   * still keeps the longest variant ("Ends Sun 2:30 PM") on a single line
-   * within the 144-px Basalt width. */
-  s_eta_layer = create_text_layer(GRect(ox, oy + 56, cw, 22),
+  /* Goal wall-clock time ("Ends 14:30") in GOTHIC_24, large enough to read at a
+   * glance. The longest variant ("Ends Sun 12:30 PM") needs almost the full
+   * 144-px Basalt width, which does not fit the w/6 round inset the other rows
+   * use. This row sits at the vertical centre of the screen though, where a
+   * round display is at its widest, so it can safely halve that inset. */
+#ifdef PBL_ROUND
+  const int16_t eta_inset = bounds.size.w / 12;
+#else
+  const int16_t eta_inset = ox;
+#endif
+  s_eta_layer = create_text_layer(GRect(eta_inset, oy + 52, bounds.size.w - 2 * eta_inset, 26),
                                   GTextAlignmentCenter,
-                                  FONT_KEY_GOTHIC_18,
+                                  FONT_KEY_GOTHIC_24,
                                   GColorBlack, GColorClear, false);
 #endif
   s_detail_layer = create_text_layer(GRect(ox, oy + detail_y, cw, 24),
