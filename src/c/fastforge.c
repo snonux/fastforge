@@ -1211,7 +1211,7 @@ static void menu_about_callback(int index, void *context) {
   (void)index;
   (void)context;
   show_placeholder_window("ABOUT",
-                          "By Paul Buetow\n\nSource code:\ncodeberg.org/\nsnonux/fastforge",
+                          "By Paul Buetow\n\nSource code:\ngithub.com/\nsnonux/fastforge",
                           "BACK Menu");
 }
 
