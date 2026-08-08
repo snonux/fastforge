@@ -28,8 +28,9 @@ enum {
   PRESET_MENU_INDEX_28H = 5,
   PRESET_MENU_INDEX_30H = 6,
   PRESET_MENU_INDEX_36H = 7,
-  PRESET_MENU_INDEX_10S = 8, /* dev/test: fires alarm after 10 s */
-  PRESET_MENU_ITEM_COUNT = 9
+  PRESET_MENU_INDEX_OPEN = 8, /* count up, no goal and no alarm */
+  PRESET_MENU_INDEX_10S = 9,  /* dev/test: fires alarm after 10 s */
+  PRESET_MENU_ITEM_COUNT = 10
 };
 
 static Window *s_menu_window;
@@ -54,6 +55,9 @@ static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
 
 static TextLayer *s_title_layer;
 static TextLayer *s_timer_layer;
+#if FASTFORGE_SHOW_GOAL_CLOCK
+static TextLayer *s_eta_layer;
+#endif
 static TextLayer *s_detail_layer;
 static TextLayer *s_stage_layer;
 static TextLayer *s_hint_layer;
@@ -92,6 +96,9 @@ static TextLayer *s_running_edit_hint_layer;
 
 static char s_title_text[24];
 static char s_timer_text[16];
+#if FASTFORGE_SHOW_GOAL_CLOCK
+static char s_eta_text[32];
+#endif
 static char s_detail_text[48];
 static char s_stage_text[32];
 static char s_goal_time_text[24];
@@ -278,6 +285,9 @@ static void apply_timer_theme(bool goal_reached) {
   window_set_background_color(s_timer_window, background);
   text_layer_set_text_color(s_title_layer, foreground);
   text_layer_set_text_color(s_timer_layer, foreground);
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  text_layer_set_text_color(s_eta_layer, foreground);
+#endif
   text_layer_set_text_color(s_detail_layer, foreground);
   text_layer_set_text_color(s_stage_layer, foreground);
   text_layer_set_text_color(s_hint_layer, foreground);
@@ -560,7 +570,12 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
     elapsed = 0;
   }
 
-  uint32_t total_seconds = (uint32_t)current_fast.target_minutes * 60;
+  /* Open-ended fasts have no target to scale the bar against, so they run on a
+   * fixed 24 h window instead — that still places the 12/18/24 h stage ticks
+   * and shows progress through the stages rather than an empty track. */
+  uint32_t total_seconds = (current_fast.target_minutes > 0)
+                               ? (uint32_t)current_fast.target_minutes * 60
+                               : 24 * 3600;
   int fill_width = progress_width_for_elapsed(elapsed, total_seconds, bounds.size.w);
   if (fill_width > 0) {
     graphics_context_set_fill_color(ctx,
@@ -587,11 +602,37 @@ static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
 static void refresh_timer_view_layers(void) {
   text_layer_set_text(s_title_layer, s_title_text);
   text_layer_set_text(s_timer_layer, s_timer_text);
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  text_layer_set_text(s_eta_layer, s_eta_text);
+#endif
   text_layer_set_text(s_detail_layer, s_detail_text);
   text_layer_set_text(s_stage_layer, s_stage_text);
   if (s_progress_layer) {
     layer_mark_dirty(s_progress_layer);
   }
+}
+
+/* Wall-clock time at which the running fast hits its target, shown right under
+ * the countdown so the finishing time can be read off without doing the
+ * arithmetic. Blank when no target is set — there is nothing to project then. */
+static void refresh_timer_eta_text(uint32_t target_seconds, time_t remaining) {
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  if (target_seconds == 0) {
+    s_eta_text[0] = '\0';
+    return;
+  }
+
+  char clock_text[20];
+  format_clock_time(current_fast.start_time + (time_t)target_seconds,
+                    fastforge_now(), clock_text, sizeof(clock_text));
+  /* Kept short ("Goal", not "Goal was") so the larger GOTHIC_18 line still fits
+   * the narrowest display once a weekday and an AM/PM suffix are present. */
+  snprintf(s_eta_text, sizeof(s_eta_text),
+           remaining > 0 ? "Ends %s" : "Goal %s", clock_text);
+#else
+  (void)target_seconds;
+  (void)remaining;
+#endif
 }
 
 static void refresh_timer_view_idle(void) {
@@ -600,6 +641,7 @@ static void refresh_timer_view_idle(void) {
   snprintf(s_title_text, sizeof(s_title_text),
            debug_controls_available() ? "NO FAST RUNNING*" : "NO FAST RUNNING");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
+  refresh_timer_eta_text(0, 0);
   snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
            global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
   snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
@@ -621,14 +663,18 @@ static void refresh_timer_view_running(time_t elapsed) {
       snprintf(s_title_text, sizeof(s_title_text), dev ? "GOAL REACHED*" : "GOAL REACHED");
     }
     format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
+    refresh_timer_eta_text(target_seconds, remaining);
     char elapsed_text[16];
     format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
     snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
              elapsed_text, streak_data.current_streak, streak_data.longest_streak);
   } else {
-    snprintf(s_title_text, sizeof(s_title_text), dev ? "ELAPSED*" : "ELAPSED");
+    /* Open-ended fast: nothing to count down to, so the big number counts up
+     * and there is no goal clock to show. */
+    snprintf(s_title_text, sizeof(s_title_text), dev ? "OPEN FAST*" : "OPEN FAST");
     format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
-    snprintf(s_detail_text, sizeof(s_detail_text), "No target set  S:%u/%u",
+    refresh_timer_eta_text(target_seconds, 0);
+    snprintf(s_detail_text, sizeof(s_detail_text), "No goal  S:%u/%u",
              streak_data.current_streak, streak_data.longest_streak);
   }
 
@@ -716,27 +762,50 @@ void show_goal_reached_window(void) {
   safe_push_window(s_goal_window, true);
 }
 
-static void start_fast_from_preset(uint16_t target_minutes) {
-  if (fast_is_running()) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
-    return;
-  }
+static void show_already_running_notice(void) {
+  show_placeholder_window("FAST RUNNING",
+                          "Stop the current fast before starting a new one.",
+                          "BACK Menu");
+}
 
-  global_target_minutes = target_minutes;
-  if (!fast_start(target_minutes)) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
-    return;
-  }
-
+/* Shared tail of every preset entry: drop the preset list and show the timer. */
+static void enter_running_timer_from_presets(void) {
   if (window_stack_contains_window(s_presets_window)) {
     window_stack_remove(s_presets_window, false);
   }
   safe_push_window(s_timer_window, true);
   refresh_all_ui_state();
+}
+
+static void start_fast_from_preset(uint16_t target_minutes) {
+  if (fast_is_running()) {
+    show_already_running_notice();
+    return;
+  }
+
+  global_target_minutes = target_minutes;
+  if (!fast_start(target_minutes)) {
+    show_already_running_notice();
+    return;
+  }
+
+  enter_running_timer_from_presets();
+}
+
+/* Open-ended fast: counts up with no goal and no alarm. The saved default
+ * target is deliberately left alone, so the next timed start still uses it. */
+static void start_open_ended_fast(void) {
+  if (fast_is_running()) {
+    show_already_running_notice();
+    return;
+  }
+
+  if (!fast_start_open_ended()) {
+    show_already_running_notice();
+    return;
+  }
+
+  enter_running_timer_from_presets();
 }
 
 static uint16_t history_menu_get_num_sections(MenuLayer *menu_layer, void *data) {
@@ -1221,34 +1290,32 @@ static void menu_about_callback(int index, void *context) {
  * timer is shortened via fastforge_reschedule_alarm_for_seconds(). */
 static void start_fast_from_test_preset(void) {
   if (fast_is_running()) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
+    show_already_running_notice();
     return;
   }
 
   global_target_minutes = 1;
   if (!fast_start(1)) {
-    show_placeholder_window("FAST RUNNING",
-                            "Stop the current fast before starting a new one.",
-                            "BACK Menu");
+    show_already_running_notice();
     return;
   }
 
   /* Shorten the alarm to 10 s (fast_start registered a 60 s one). */
   fastforge_reschedule_alarm_for_seconds(10);
 
-  if (window_stack_contains_window(s_presets_window)) {
-    window_stack_remove(s_presets_window, false);
-  }
-  safe_push_window(s_timer_window, true);
-  refresh_all_ui_state();
+  enter_running_timer_from_presets();
 }
 
 static void preset_10s_callback(int index, void *context) {
   (void)index;
   (void)context;
   start_fast_from_test_preset();
+}
+
+static void preset_open_callback(int index, void *context) {
+  (void)index;
+  (void)context;
+  start_open_ended_fast();
 }
 
 static void preset_16h_callback(int index, void *context) {
@@ -1457,17 +1524,34 @@ static void timer_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 24),
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  /* Title and countdown move up slightly to free a row for the goal clock. */
+  const int16_t title_y = 2, timer_y = 22, detail_y = 78;
+#else
+  /* Aplite has no goal-clock row, so it keeps the original roomier spacing. */
+  const int16_t title_y = 4, timer_y = 28, detail_y = 76;
+#endif
+
+  s_title_layer = create_text_layer(GRect(ox, oy + title_y, cw, 22),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_18_BOLD,
                                     GColorBlack, GColorClear, false);
   /* GOTHIC_28_BOLD fits all 8-char "HH:MM:SS" and 9-char "-HH:MM:SS" overtime
    * strings without truncation on the 144-px Basalt display. */
-  s_timer_layer = create_text_layer(GRect(ox, oy + 28, cw, 42),
+  s_timer_layer = create_text_layer(GRect(ox, oy + timer_y, cw, 36),
                                     GTextAlignmentCenter,
                                     FONT_KEY_GOTHIC_28_BOLD,
                                     GColorBlack, GColorClear, false);
-  s_detail_layer = create_text_layer(GRect(ox, oy + 76, cw, 24),
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  /* Goal wall-clock time ("Ends 14:30"). GOTHIC_18 is the largest font that
+   * still keeps the longest variant ("Ends Sun 2:30 PM") on a single line
+   * within the 144-px Basalt width. */
+  s_eta_layer = create_text_layer(GRect(ox, oy + 56, cw, 22),
+                                  GTextAlignmentCenter,
+                                  FONT_KEY_GOTHIC_18,
+                                  GColorBlack, GColorClear, false);
+#endif
+  s_detail_layer = create_text_layer(GRect(ox, oy + detail_y, cw, 24),
                                      GTextAlignmentCenter,
                                      FONT_KEY_GOTHIC_18,
                                      GColorBlack, GColorClear, false);
@@ -1486,6 +1570,9 @@ static void timer_window_load(Window *window) {
 
   add_text_layer(window_layer, s_title_layer);
   add_text_layer(window_layer, s_timer_layer);
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  add_text_layer(window_layer, s_eta_layer);
+#endif
   add_text_layer(window_layer, s_detail_layer);
   layer_add_child(window_layer, s_progress_layer);
   add_text_layer(window_layer, s_stage_layer);
@@ -1502,6 +1589,10 @@ static void timer_window_unload(Window *window) {
   s_title_layer = NULL;
   text_layer_destroy(s_timer_layer);
   s_timer_layer = NULL;
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  text_layer_destroy(s_eta_layer);
+  s_eta_layer = NULL;
+#endif
   text_layer_destroy(s_detail_layer);
   s_detail_layer = NULL;
   text_layer_destroy(s_stage_layer);
@@ -1993,6 +2084,12 @@ static void configure_preset_items(void) {
     .title = "36 hours",
     .subtitle = "Deep ketosis push",
     .callback = preset_36h_callback
+  };
+  /* Open-ended mode: no goal, no alarm, timer counts up until stopped. */
+  s_presets_menu_items[PRESET_MENU_INDEX_OPEN] = (SimpleMenuItem) {
+    .title = "Open ended",
+    .subtitle = "No goal, count up",
+    .callback = preset_open_callback
   };
   /* Dev/test preset: alarm fires after 10 s so the goal-reached flow can be
    * exercised quickly without waiting hours. Kept permanently as last item. */

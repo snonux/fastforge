@@ -185,6 +185,65 @@ void format_entry_datetime(time_t timestamp, char *buffer, size_t size) {
   strftime(buffer, size, "%b %d %H:%M", tm_info);
 }
 
+#if FASTFORGE_SHOW_GOAL_CLOCK
+/* Render `timestamp` as a wall-clock time relative to `reference`, e.g. "14:30"
+ * (or "2:30 PM" on watches configured for 12-hour time). The weekday is
+ * prepended ("Tue 14:30") when the two fall on different calendar days, so a
+ * fast that finishes after midnight is not mistaken for one finishing today. */
+void format_clock_time(time_t timestamp, time_t reference, char *buffer, size_t size) {
+  if (!buffer || size == 0) {
+    return;
+  }
+  if (timestamp <= 0) {
+    snprintf(buffer, size, "--");
+    return;
+  }
+
+  struct tm *tm_info = localtime(&timestamp);
+  if (!tm_info) {
+    snprintf(buffer, size, "--");
+    return;
+  }
+  /* localtime() hands back a shared static struct, so copy before calling it
+   * again for the reference timestamp below. */
+  struct tm target_tm = *tm_info;
+
+  bool same_day = false;
+  tm_info = localtime(&reference);
+  if (tm_info) {
+    same_day = (tm_info->tm_year == target_tm.tm_year &&
+                tm_info->tm_yday == target_tm.tm_yday);
+  }
+
+  /* 24-hour watches get the conventional zero-padded "09:05"; 12-hour ones drop
+   * the padding ("9:05 PM") to keep the rendered line as short as possible. */
+  int hour = target_tm.tm_hour;
+  const char *suffix = "";
+  bool pad_hour = true;
+  if (!clock_is_24h_style()) {
+    suffix = (hour < 12) ? " AM" : " PM";
+    hour %= 12;
+    if (hour == 0) {
+      hour = 12;
+    }
+    pad_hour = false;
+  }
+
+  /* Weekday names packed into one string instead of a pointer table, and the
+   * time assembled by hand rather than via strftime — both keep code and data
+   * footprint down on the tighter platforms. */
+  static const char weekday_names[] = "SunMonTueWedThuFriSat";
+  char day_prefix[5] = "";
+  if (!same_day && target_tm.tm_wday >= 0 && target_tm.tm_wday < 7) {
+    memcpy(day_prefix, &weekday_names[target_tm.tm_wday * 3], 3);
+    day_prefix[3] = ' ';
+  }
+
+  snprintf(buffer, size, pad_hour ? "%s%02d:%02d%s" : "%s%d:%02d%s",
+           day_prefix, hour, target_tm.tm_min, suffix);
+}
+#endif /* FASTFORGE_SHOW_GOAL_CLOCK */
+
 void update_max_stage_if_needed(time_t elapsed_seconds) {
   if (!fast_is_running()) {
     return;
@@ -269,14 +328,17 @@ void schedule_alarm_if_needed(void) {
   alarm_timer = app_timer_register(ms_until_alarm, alarm_callback, NULL);
 }
 
-bool fast_start(uint16_t preset_target_minutes) {
+/* Begin a fast with an already-resolved target. A target of 0 marks an
+ * open-ended fast: schedule_alarm_if_needed() then registers no alarm and the
+ * UI counts up instead of down. */
+static bool begin_fast(uint16_t target_minutes) {
   if (fast_is_running()) {
     return false;
   }
 
   current_fast.start_time = fastforge_now();
   current_fast.end_time = 0;
-  current_fast.target_minutes = resolve_target_minutes(preset_target_minutes);
+  current_fast.target_minutes = target_minutes;
   memset(current_fast.note, 0, sizeof(current_fast.note));
   current_fast.max_stage_reached = 0;
 #ifdef DEBUG
@@ -287,6 +349,15 @@ bool fast_start(uint16_t preset_target_minutes) {
   APP_LOG(APP_LOG_LEVEL_INFO, "Started fast at %ld target=%u",
           (long)current_fast.start_time, current_fast.target_minutes);
   return true;
+}
+
+bool fast_start(uint16_t preset_target_minutes) {
+  return begin_fast(resolve_target_minutes(preset_target_minutes));
+}
+
+/* Open-ended fast: no goal, no alarm — the user stops it whenever they like. */
+bool fast_start_open_ended(void) {
+  return begin_fast(0);
 }
 
 bool fast_stop(void) {

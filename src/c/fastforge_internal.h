@@ -17,6 +17,9 @@ void update_max_stage_if_needed(time_t elapsed_seconds);
 void schedule_alarm_if_needed(void);
 bool running_current_fast_is_at_target(time_t now);
 void format_entry_datetime(time_t timestamp, char *buffer, size_t size);
+#if FASTFORGE_SHOW_GOAL_CLOCK
+void format_clock_time(time_t timestamp, time_t reference, char *buffer, size_t size);
+#endif
 void sort_history_by_end_time(void);
 int history_index_for_row(int row);
 const char *milestone_badge_label_for_level(uint8_t stage_level);
