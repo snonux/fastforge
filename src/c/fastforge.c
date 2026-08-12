@@ -41,14 +41,27 @@ static Window *s_history_window;
 static Window *s_history_edit_window;
 static Window *s_running_edit_window;
 
-static SimpleMenuLayer *s_main_menu_layer;
-static SimpleMenuLayer *s_presets_menu_layer;
+static MenuLayer *s_main_menu_layer;
+static MenuLayer *s_presets_menu_layer;
 MenuLayer *s_history_menu_layer;
 static SimpleMenuSection s_main_menu_sections[1];
 static SimpleMenuSection s_presets_menu_sections[1];
 static SimpleMenuItem s_main_menu_items[MAIN_MENU_ITEM_COUNT];
 static char s_menu_resume_subtitle[40];
 static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
+
+/* Context passed to the generic MenuLayer callbacks so the same draw/select
+ * code serves the main, preset, and debug menus. */
+typedef struct {
+  const SimpleMenuItem *items;
+  int count;
+  const char *header;
+} FfMenuCtx;
+static FfMenuCtx s_main_menu_ctx;
+static FfMenuCtx s_presets_menu_ctx;
+#ifdef DEBUG
+static FfMenuCtx s_debug_menu_ctx;
+#endif
 
 static TextLayer *s_title_layer;
 static TextLayer *s_timer_layer;
@@ -59,6 +72,10 @@ static TextLayer *s_detail_layer;
 static TextLayer *s_stage_layer;
 static TextLayer *s_hint_layer;
 static Layer *s_progress_layer;
+static Layer *s_timer_indicator_layer;
+/* Current timer foreground colour (set by apply_timer_theme) so the page
+ * indicator can draw its active chevron in the same colour as the text. */
+static GColor s_timer_foreground = GColorBlack;
 
 static Layer *s_goal_background_layer;
 static TextLayer *s_goal_title_layer;
@@ -124,11 +141,23 @@ static int s_history_edit_index = -1;
 static FastEntry s_history_edit_draft = {0};
 #ifdef DEBUG
 static Window *s_debug_window;
-static SimpleMenuLayer *s_debug_menu_layer;
+static MenuLayer *s_debug_menu_layer;
 static SimpleMenuSection s_debug_menu_sections[1];
 static SimpleMenuItem s_debug_menu_items[6];
 static char s_debug_menu_clock_text[40];
 #endif
+
+/* Timer screen has two sub-screens (pages) because the hero countdown, goal
+ * clock, progress bar, detail, stage, and hint do not all fit at the largest
+ * fonts on the round display. UP/DOWN switches pages. */
+static uint8_t s_timer_page = 0;
+#define TIMER_PAGE_COUNT 2
+
+/* ScrollLayer-backed screens (statistics, detail/about) hold a stack of text
+ * layers so each line can use its own font while still scrolling when the body
+ * overflows the visible area. */
+static ScrollLayer *s_stats_scroll_layer;
+static ScrollLayer *s_detail_scroll_layer;
 
 typedef enum {
   EDIT_FIELD_START = 0,
@@ -137,10 +166,14 @@ typedef enum {
 } EditField;
 
 static void refresh_timer_view(void);
+static void refresh_timer_page(void);
 static void refresh_goal_window_content(void);
 static void sync_main_menu_state(void);
 static void refresh_running_edit_window_content(void);
 static void refresh_settings_window_content(void);
+static MenuLayer *create_ff_menu_layer(Window *window, GRect bounds, FfMenuCtx *ctx);
+void fastforge_stats_layout_refresh(void);
+void fastforge_detail_layout_refresh(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
 #endif
@@ -172,6 +205,7 @@ static void set_placeholder_content(const char *title, const char *body, const c
   if (s_placeholder_hint_layer) {
     text_layer_set_text(s_placeholder_hint_layer, s_placeholder_hint_text);
   }
+  fastforge_detail_layout_refresh();
 }
 
 void show_placeholder_window(const char *title, const char *body, const char *hint) {
@@ -279,6 +313,7 @@ static bool timer_goal_reached_for_elapsed(time_t elapsed_seconds) {
 static void apply_timer_theme(bool goal_reached) {
   GColor background = theme_timer_background_color(goal_reached);
   GColor foreground = theme_timer_text_color(goal_reached);
+  s_timer_foreground = foreground;
   window_set_background_color(s_timer_window, background);
   text_layer_set_text_color(s_title_layer, foreground);
   text_layer_set_text_color(s_timer_layer, foreground);
@@ -288,30 +323,9 @@ static void apply_timer_theme(bool goal_reached) {
   text_layer_set_text_color(s_detail_layer, foreground);
   text_layer_set_text_color(s_stage_layer, foreground);
   text_layer_set_text_color(s_hint_layer, foreground);
-}
-
-static void format_remaining_with_overtime(time_t remaining_seconds,
-                                           char *buffer, size_t size) {
-  if (!buffer || size == 0) {
-    return;
+  if (s_timer_indicator_layer) {
+    layer_mark_dirty(s_timer_indicator_layer);
   }
-
-  if (remaining_seconds >= 0) {
-    format_hhmmss(remaining_seconds, buffer, size);
-    return;
-  }
-
-  char overtime_text[16];
-  format_hhmmss(-remaining_seconds, overtime_text, sizeof(overtime_text));
-
-  size_t copy_len = strlen(overtime_text);
-  if (copy_len > size - 2) {
-    copy_len = size - 2;
-  }
-
-  buffer[0] = '-';
-  memcpy(buffer + 1, overtime_text, copy_len);
-  buffer[copy_len + 1] = '\0';
 }
 
 static Window *create_window_with_handlers(WindowHandlers handlers,
@@ -325,18 +339,51 @@ static Window *create_window_with_handlers(WindowHandlers handlers,
 }
 
 /* Layout helper: content origin and width for the current display shape.
- * On round displays (chalk, gabbro) the screen is circular, so we inset
- * 1/6 of the display width on every side to keep all text within the
- * visible circle.  On rectangular displays the inset is zero. */
+ *
+ * FastForge targets two large displays:
+ *   - emery  (Pebble Time 2): 200x228 rectangular color
+ *   - gabbro (Pebble Round 2): 260x260 round color
+ * On the round display we inset horizontally by 1/6 of the width and vertically
+ * by 1/8 of the height so fixed-layout rows stay inside the visible circle.
+ * On the rectangular display a small 6 px margin keeps text off the bezel. */
 typedef struct { int16_t ox; int16_t oy; int16_t cw; } ContentRect;
 static ContentRect content_rect(GRect bounds) {
 #ifdef PBL_ROUND
-  int16_t inset = bounds.size.w / 6;
-  return (ContentRect){ inset, inset, bounds.size.w - 2 * inset };
+  int16_t inset_x = bounds.size.w / 6;
+  int16_t inset_y = bounds.size.h / 8;
+  return (ContentRect){ inset_x, inset_y, bounds.size.w - 2 * inset_x };
 #else
-  return (ContentRect){ 0, 0, bounds.size.w };
+  return (ContentRect){ 6, 6, bounds.size.w - 12 };
 #endif
 }
+
+/* Font choices. The two target platforms share the same system font set, so a
+ * single set of macros sizes every screen. Fonts are pushed as large as the
+ * layouts in each *_window_load() allow. */
+#define FF_FONT_MENU_TITLE   FONT_KEY_GOTHIC_24_BOLD  /* menu section/cell title */
+#define FF_FONT_MENU_SUB     FONT_KEY_GOTHIC_18       /* menu cell subtitle     */
+#define FF_FONT_SCREEN_TITLE FONT_KEY_GOTHIC_28_BOLD  /* full-screen titles     */
+#define FF_FONT_HERO         FONT_KEY_BITHAM_42_BOLD  /* big countdown number   */
+#define FF_FONT_BIG          FONT_KEY_GOTHIC_28_BOLD  /* large body line        */
+#define FF_FONT_BODY_BOLD    FONT_KEY_GOTHIC_24_BOLD  /* primary body text      */
+#define FF_FONT_BODY         FONT_KEY_GOTHIC_24       /* regular body text      */
+#define FF_FONT_SUB_BOLD     FONT_KEY_GOTHIC_18_BOLD  /* secondary line         */
+#define FF_FONT_SUB          FONT_KEY_GOTHIC_18       /* hint / small text      */
+#define FF_FONT_HINT         FONT_KEY_GOTHIC_18_BOLD  /* control hints          */
+
+/* Vertical pixel height each font occupies (ascender+descender). Used to size
+ * layer frames so glyphs never get clipped. These match the Pebble system
+ * font metrics for the families used above. */
+#define FF_H_MENU_TITLE   26
+#define FF_H_MENU_SUB     22
+#define FF_H_SCREEN_TITLE 34
+#define FF_H_HERO         50
+#define FF_H_BIG          34
+#define FF_H_BODY_BOLD    28
+#define FF_H_BODY         28
+#define FF_H_SUB_BOLD     22
+#define FF_H_SUB          22
+#define FF_H_HINT         22
 
 static uint16_t clamp_default_target_minutes(int target_minutes) {
   if (target_minutes < 8 * 60) {
@@ -430,7 +477,7 @@ static void debug_refresh_menu(void) {
     .items = s_debug_menu_items
   };
   if (s_debug_menu_layer) {
-    menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_debug_menu_layer));
+    menu_layer_reload_data(s_debug_menu_layer);
   }
 }
 
@@ -501,14 +548,18 @@ static void debug_menu_select_callback(int index, void *context) {
 static void debug_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   debug_refresh_menu();
-  s_debug_menu_layer = simple_menu_layer_create(bounds, window, s_debug_menu_sections, 1, NULL);
-  layer_add_child(window_layer, simple_menu_layer_get_layer(s_debug_menu_layer));
+  s_debug_menu_ctx = (FfMenuCtx){ s_debug_menu_items, (int)ARRAY_LENGTH(s_debug_menu_items),
+                                  s_debug_menu_clock_text };
+  s_debug_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_debug_menu_ctx);
+  layer_add_child(window_layer, menu_layer_get_layer(s_debug_menu_layer));
 }
 
 static void debug_window_unload(Window *window) {
   (void)window;
-  simple_menu_layer_destroy(s_debug_menu_layer);
+  menu_layer_destroy(s_debug_menu_layer);
   s_debug_menu_layer = NULL;
 }
 
@@ -545,6 +596,44 @@ static int tick_x_for_seconds(uint32_t total_seconds, uint32_t tick_seconds, int
     return width - 1;
   }
   return tick_x;
+}
+
+/* Page indicator for the timer's two sub-screens: an up chevron (active when a
+ * previous page exists), a "n/2" counter, and a down chevron (active when a
+ * next page exists). Active chevrons use the current timer foreground colour;
+ * inactive ones use mid-grey so they read on every timer background. */
+static void timer_chevron(GContext *ctx, int16_t cx, int16_t cy, bool points_up,
+                         GColor color) {
+  const int16_t s = 6, t = 4;
+  graphics_context_set_stroke_color(ctx, color);
+  graphics_context_set_stroke_width(ctx, 2);
+  if (points_up) {
+    graphics_draw_line(ctx, GPoint(cx - s, cy + t), GPoint(cx, cy - t));
+    graphics_draw_line(ctx, GPoint(cx, cy - t), GPoint(cx + s, cy + t));
+  } else {
+    graphics_draw_line(ctx, GPoint(cx - s, cy - t), GPoint(cx, cy + t));
+    graphics_draw_line(ctx, GPoint(cx, cy + t), GPoint(cx + s, cy - t));
+  }
+}
+
+static void timer_indicator_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  int16_t cx = bounds.size.w / 2;
+  int16_t cy = bounds.size.h / 2;
+  GColor active = s_timer_foreground;
+  GColor inactive = GColorLightGray;
+  bool up = (s_timer_page > 0);
+  bool down = (s_timer_page < TIMER_PAGE_COUNT - 1);
+  timer_chevron(ctx, cx - 30, cy, true,  up   ? active : inactive);
+  timer_chevron(ctx, cx + 30, cy, false, down ? active : inactive);
+
+  char label[8];
+  snprintf(label, sizeof(label), "%u/%u", (unsigned)(s_timer_page + 1),
+           (unsigned)TIMER_PAGE_COUNT);
+  graphics_context_set_text_color(ctx, active);
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(cx - 20, cy - 8, 40, 16),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 }
 
 static void timer_progress_update_proc(Layer *layer, GContext *ctx) {
@@ -634,15 +723,17 @@ static void refresh_timer_eta_text(uint32_t target_seconds, time_t remaining) {
 
 static void refresh_timer_view_idle(void) {
   apply_timer_theme(false);
-  /* '*' suffix on the title indicates developer mode is active. */
+  /* '*' suffix on the title indicates developer mode is active. Short titles
+   * keep the GOTHIC_28_BOLD title font on the narrow round display. */
   snprintf(s_title_text, sizeof(s_title_text),
-           debug_controls_available() ? "NO FAST RUNNING*" : "NO FAST RUNNING");
+           debug_controls_available() ? "NO FAST*" : "NO FAST");
   format_hhmmss(0, s_timer_text, sizeof(s_timer_text));
   refresh_timer_eta_text(0, 0);
-  snprintf(s_detail_text, sizeof(s_detail_text), "Target: %um  S:%u/%u",
-           global_target_minutes, streak_data.current_streak, streak_data.longest_streak);
+  char target_text[20];
+  format_duration_hours_minutes((time_t)global_target_minutes * 60,
+                                target_text, sizeof(target_text));
+  snprintf(s_detail_text, sizeof(s_detail_text), "Target %s", target_text);
   snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
-  text_layer_set_text(s_hint_layer, "SELECT Start\nDOWN Menu");
 }
 
 static void refresh_timer_view_running(time_t elapsed) {
@@ -656,28 +747,59 @@ static void refresh_timer_view_running(time_t elapsed) {
     time_t remaining = (time_t)target_seconds - elapsed;
     if (remaining > 0) {
       snprintf(s_title_text, sizeof(s_title_text), dev ? "COUNTDOWN*" : "COUNTDOWN");
+      /* Hero shows the time remaining. The hero font (BITHAM_42_BOLD) has no
+       * room for the leading '-' on overtime, so once the goal is hit the hero
+       * switches to showing the overtime amount as an absolute value — the
+       * "GOAL!" title and green theme already signal that it is overtime. */
+      format_hhmmss(remaining, s_timer_text, sizeof(s_timer_text));
     } else {
-      snprintf(s_title_text, sizeof(s_title_text), dev ? "GOAL REACHED*" : "GOAL REACHED");
+      snprintf(s_title_text, sizeof(s_title_text), dev ? "GOAL!*" : "GOAL!");
+      format_hhmmss(-remaining, s_timer_text, sizeof(s_timer_text));
     }
-    format_remaining_with_overtime(remaining, s_timer_text, sizeof(s_timer_text));
     refresh_timer_eta_text(target_seconds, remaining);
-    char elapsed_text[16];
-    format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
-    snprintf(s_detail_text, sizeof(s_detail_text), "Elapsed %s  S:%u/%u",
-             elapsed_text, streak_data.current_streak, streak_data.longest_streak);
+    /* Page 1 reuses the detail layer as a second large line: elapsed time. */
+    format_hhmmss(elapsed, s_detail_text, sizeof(s_detail_text));
   } else {
     /* Open-ended fast: nothing to count down to, so the big number counts up
      * and there is no goal clock to show. */
     snprintf(s_title_text, sizeof(s_title_text), dev ? "OPEN FAST*" : "OPEN FAST");
     format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
     refresh_timer_eta_text(target_seconds, 0);
-    snprintf(s_detail_text, sizeof(s_detail_text), "No goal  S:%u/%u",
-             streak_data.current_streak, streak_data.longest_streak);
+    snprintf(s_detail_text, sizeof(s_detail_text), "No goal");
   }
 
   snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s",
            stage_text_for_elapsed(elapsed));
-  text_layer_set_text(s_hint_layer, "UP Edit  SEL Stop\nDOWN Menu");
+}
+
+/* Hint text and layer visibility for the current timer sub-screen.
+ * Page 0 = hero countdown + goal clock + progress; page 1 = elapsed/stage. */
+static void refresh_timer_page(void) {
+  if (!s_title_layer || !s_hint_layer) {
+    return;
+  }
+  bool running = fast_is_running();
+  bool page0 = (s_timer_page == 0);
+
+  layer_set_hidden(text_layer_get_layer(s_title_layer), !page0);
+  layer_set_hidden(text_layer_get_layer(s_timer_layer), !page0);
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  layer_set_hidden(text_layer_get_layer(s_eta_layer), !page0);
+#endif
+  layer_set_hidden(s_progress_layer, !page0);
+  layer_set_hidden(text_layer_get_layer(s_detail_layer), page0);
+  layer_set_hidden(text_layer_get_layer(s_stage_layer), page0);
+  if (s_timer_indicator_layer) {
+    layer_mark_dirty(s_timer_indicator_layer);
+  }
+
+  if (page0) {
+    text_layer_set_text(s_hint_layer, running ? "DN +   SEL stop"
+                                              : "DN +   SEL start");
+  } else {
+    text_layer_set_text(s_hint_layer, running ? "HOLD SEL edit  BACK menu"
+                                              : "SEL start  BACK menu");
+  }
 }
 
 static void refresh_timer_view(void) {
@@ -696,6 +818,7 @@ static void refresh_timer_view(void) {
   }
 
   refresh_timer_view_layers();
+  refresh_timer_page();
 }
 
 static void refresh_goal_window_content(void) {
@@ -714,7 +837,7 @@ static void refresh_goal_window_content(void) {
 
   char elapsed_text[16];
   format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
-  snprintf(s_goal_time_text, sizeof(s_goal_time_text), "Elapsed %s", elapsed_text);
+  snprintf(s_goal_time_text, sizeof(s_goal_time_text), "%s", elapsed_text);
   snprintf(s_goal_stage_text, sizeof(s_goal_stage_text), "Stage: %s", stage_text_for_elapsed(elapsed));
   text_layer_set_text(s_goal_time_layer, s_goal_time_text);
   text_layer_set_text(s_goal_stage_layer, s_goal_stage_text);
@@ -744,8 +867,121 @@ static void sync_main_menu_state(void) {
   s_main_menu_items[MAIN_MENU_INDEX_RESUME_LAST].subtitle = s_menu_resume_subtitle;
 
   if (s_main_menu_layer) {
-    menu_layer_reload_data(simple_menu_layer_get_menu_layer(s_main_menu_layer));
+    menu_layer_reload_data(s_main_menu_layer);
   }
+}
+
+/* ---- Generic MenuLayer callbacks (main / preset / debug menus) ----
+ *
+ * These menus used SimpleMenuLayer, which renders with fixed small system
+ * fonts. To use the largest fonts that fit, each is now a MenuLayer driven by
+ * an FfMenuCtx that points at its SimpleMenuItem array. The item's own
+ * .callback is invoked on select, so menu behaviour is unchanged. */
+static uint16_t ff_menu_get_num_sections(MenuLayer *menu_layer, void *data) {
+  (void)menu_layer;
+  (void)data;
+  return 1;
+}
+
+static uint16_t ff_menu_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  (void)menu_layer;
+  (void)section_index;
+  const FfMenuCtx *ctx = data;
+  return ctx ? (uint16_t)ctx->count : 0;
+}
+
+static int16_t ff_menu_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  (void)menu_layer;
+  (void)section_index;
+  const FfMenuCtx *ctx = data;
+  return ctx && ctx->header ? FF_H_MENU_TITLE + 6 : 0;
+}
+
+static int16_t ff_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  (void)menu_layer;
+  (void)cell_index;
+  (void)data;
+  /* One bold title line plus one regular subtitle line, with padding. */
+  return FF_H_MENU_TITLE + FF_H_MENU_SUB + 12;
+}
+
+static void ff_menu_draw_header(GContext *ctx, const Layer *cell_layer,
+                                uint16_t section_index, void *data) {
+  (void)section_index;
+  const FfMenuCtx *ctx_data = data;
+  if (!ctx_data || !ctx_data->header) {
+    return;
+  }
+  GRect bounds = layer_get_bounds(cell_layer);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, ctx_data->header,
+                     fonts_get_system_font(FF_FONT_MENU_TITLE),
+                     GRect(4, 0, bounds.size.w - 8, FF_H_MENU_TITLE),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+}
+
+static void ff_menu_draw_row(GContext *ctx, const Layer *cell_layer,
+                             MenuIndex *cell_index, void *data) {
+  const FfMenuCtx *ctx_data = data;
+  if (!ctx_data || cell_index->row >= ctx_data->count) {
+    return;
+  }
+  const SimpleMenuItem *item = &ctx_data->items[cell_index->row];
+  GRect bounds = layer_get_bounds(cell_layer);
+  bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
+  GColor background = highlighted ? GColorBlack : GColorWhite;
+  GColor foreground = highlighted ? GColorWhite : GColorBlack;
+
+  graphics_context_set_fill_color(ctx, background);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, foreground);
+
+  graphics_draw_text(ctx, item->title ? item->title : "",
+                     fonts_get_system_font(FF_FONT_MENU_TITLE),
+                     GRect(6, 2, bounds.size.w - 12, FF_H_MENU_TITLE),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  if (item->subtitle && item->subtitle[0] != '\0') {
+    graphics_draw_text(ctx, item->subtitle,
+                       fonts_get_system_font(FF_FONT_MENU_SUB),
+                       GRect(6, FF_H_MENU_TITLE + 4, bounds.size.w - 12, FF_H_MENU_SUB),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
+}
+
+static void ff_menu_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  (void)menu_layer;
+  const FfMenuCtx *ctx_data = data;
+  if (!ctx_data || cell_index->row >= ctx_data->count) {
+    return;
+  }
+  const SimpleMenuItem *item = &ctx_data->items[cell_index->row];
+  if (item->callback) {
+    item->callback(cell_index->row, NULL);
+  }
+}
+
+/* Common callback table wired into every FfMenuCtx-driven MenuLayer. */
+static MenuLayerCallbacks ff_menu_callbacks(void) {
+  return (MenuLayerCallbacks) {
+    .get_num_sections = ff_menu_get_num_sections,
+    .get_num_rows = ff_menu_get_num_rows,
+    .get_header_height = ff_menu_get_header_height,
+    .get_cell_height = ff_menu_get_cell_height,
+    .draw_header = ff_menu_draw_header,
+    .draw_row = ff_menu_draw_row,
+    .select_click = ff_menu_select_click
+  };
+}
+
+/* Build a MenuLayer driven by an FfMenuCtx, with the high-contrast colours
+ * the SimpleMenuLayer used before. */
+static MenuLayer *create_ff_menu_layer(Window *window, GRect bounds, FfMenuCtx *ctx) {
+  MenuLayer *menu = menu_layer_create(bounds);
+  menu_layer_set_callbacks(menu, ctx, ff_menu_callbacks());
+  menu_layer_set_click_config_onto_window(menu, window);
+  menu_layer_set_normal_colors(menu, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(menu, GColorBlack, GColorWhite);
+  return menu;
 }
 
 void refresh_all_ui_state(void) {
@@ -830,7 +1066,8 @@ static int16_t history_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *ce
   (void)menu_layer;
   (void)cell_index;
   (void)data;
-  return 44;
+  /* One GOTHIC_24_BOLD title line plus one GOTHIC_18 subtitle line. */
+  return FF_H_MENU_TITLE + FF_H_MENU_SUB + 12;
 }
 
 static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *data) {
@@ -841,12 +1078,14 @@ static void history_menu_draw_header(GContext *ctx, const Layer *cell_layer, uin
   (void)data;
 }
 
-/* Update the fixed title bar with current history count and streak info. */
+/* Update the fixed title bar with current history count. Streak counts live
+ * on the statistics screen so the title can use the largest font that fits the
+ * round display. */
 static void refresh_history_title(void) {
   if (!s_history_title_layer) return;
   snprintf(s_history_title_text, sizeof(s_history_title_text),
-           "HISTORY %d  S:%u/%u",
-           history_count, streak_data.current_streak, streak_data.longest_streak);
+           "HISTORY (%d)",
+           history_count);
   text_layer_set_text(s_history_title_layer, s_history_title_text);
 }
 
@@ -864,8 +1103,8 @@ static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIn
 
   if (row < 0 || row >= MAX_FASTS) {
     graphics_draw_text(ctx, "Unavailable",
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(4, 0, bounds.size.w - 8, 20),
+                       fonts_get_system_font(FF_FONT_MENU_TITLE),
+                       GRect(6, 2, bounds.size.w - 12, FF_H_MENU_TITLE),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     return;
   }
@@ -873,12 +1112,12 @@ static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIn
   char subtitle[96];
   format_history_row(row, title, sizeof(title), subtitle, sizeof(subtitle));
   graphics_draw_text(ctx, title,
-                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(4, 2, bounds.size.w - 8, 18),
+                     fonts_get_system_font(FF_FONT_MENU_TITLE),
+                     GRect(6, 2, bounds.size.w - 12, FF_H_MENU_TITLE),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   graphics_draw_text(ctx, subtitle,
-                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 20, bounds.size.w - 8, bounds.size.h - 22),
+                     fonts_get_system_font(FF_FONT_MENU_SUB),
+                     GRect(6, FF_H_MENU_TITLE + 4, bounds.size.w - 12, FF_H_MENU_SUB),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
@@ -1368,7 +1607,29 @@ static void timer_select_click_handler(ClickRecognizerRef recognizer, void *cont
   refresh_all_ui_state();
 }
 
+/* UP/DOWN switch between the two timer sub-screens (hero countdown page and
+ * the elapsed/stage page). BACK returns to the menu. */
 static void timer_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (s_timer_page == 0) {
+    s_timer_page = TIMER_PAGE_COUNT - 1;
+  } else {
+    s_timer_page--;
+  }
+  refresh_timer_page();
+}
+
+static void timer_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  s_timer_page = (uint8_t)((s_timer_page + 1) % TIMER_PAGE_COUNT);
+  refresh_timer_page();
+}
+
+/* Long-press SELECT opens the running-fast editor (was on UP before the
+ * buttons became page navigation). */
+static void timer_select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   if (!fast_is_running()) {
@@ -1378,13 +1639,7 @@ static void timer_up_click_handler(ClickRecognizerRef recognizer, void *context)
   refresh_running_edit_window_content();
 }
 
-static void timer_down_click_handler(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  window_stack_remove(s_timer_window, true);
-}
-
- #ifdef DEBUG
+#ifdef DEBUG
 static void timer_debug_long_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
@@ -1397,8 +1652,9 @@ static void timer_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_UP, timer_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, timer_select_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, timer_down_click_handler);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, timer_select_long_click_handler, NULL);
 #ifdef DEBUG
-  window_long_click_subscribe(BUTTON_ID_DOWN, 500, timer_debug_long_click_handler, NULL);
+  window_long_click_subscribe(BUTTON_ID_DOWN, 700, timer_debug_long_click_handler, NULL);
 #endif
 }
 
@@ -1423,12 +1679,6 @@ static void goal_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_DOWN, goal_window_continue_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, goal_window_continue_handler);
   window_single_click_subscribe(BUTTON_ID_UP, goal_window_continue_handler);
-}
-
-static void placeholder_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
-  (void)recognizer;
-  (void)context;
-  window_stack_remove(s_detail_window, true);
 }
 
 static void settings_up_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -1467,12 +1717,36 @@ static void settings_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_BACK, settings_back_click_handler);
 }
 
-static void placeholder_click_config_provider(void *context) {
+static void stats_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
   (void)context;
-  window_single_click_subscribe(BUTTON_ID_SELECT, placeholder_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_DOWN, placeholder_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_BACK, placeholder_dismiss_handler);
-  window_single_click_subscribe(BUTTON_ID_UP, placeholder_dismiss_handler);
+  window_stack_remove(s_stats_window, true);
+}
+
+static void detail_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_detail_window, true);
+}
+
+/* ScrollLayer-backed screens: UP/DOWN scroll the content, SELECT/BACK dismiss.
+ * The ScrollLayer pointer is passed as the click context (via
+ * window_set_click_config_provider_with_context) so the built-in scroll click
+ * handlers receive the layer they operate on. */
+static void stats_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, scroll_layer_scroll_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, scroll_layer_scroll_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, stats_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, stats_dismiss_handler);
+}
+
+static void detail_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_UP, scroll_layer_scroll_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, scroll_layer_scroll_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_SELECT, detail_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, detail_dismiss_handler);
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
@@ -1497,14 +1771,15 @@ static void menu_window_load(Window *window) {
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
-  s_main_menu_layer = simple_menu_layer_create(menu_bounds, window, s_main_menu_sections, 1, NULL);
-  layer_add_child(window_layer, simple_menu_layer_get_layer(s_main_menu_layer));
+  s_main_menu_ctx = (FfMenuCtx){ s_main_menu_items, MAIN_MENU_ITEM_COUNT, "FastForge" };
+  s_main_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_main_menu_ctx);
+  layer_add_child(window_layer, menu_layer_get_layer(s_main_menu_layer));
   sync_main_menu_state();
 }
 
 static void menu_window_unload(Window *window) {
   (void)window;
-  simple_menu_layer_destroy(s_main_menu_layer);
+  menu_layer_destroy(s_main_menu_layer);
   s_main_menu_layer = NULL;
   save_all_data();
 }
@@ -1515,55 +1790,64 @@ static void timer_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-#if FASTFORGE_SHOW_GOAL_CLOCK
-  /* Title and countdown move up to free a full row for the goal clock. */
-  const int16_t title_y = 0, timer_y = 18, detail_y = 78;
-#else
-  /* Aplite has no goal-clock row, so it keeps the original roomier spacing. */
-  const int16_t title_y = 4, timer_y = 28, detail_y = 76;
-#endif
+  /* The timer screen is split into two sub-screens because the hero countdown,
+   * goal clock, progress bar, elapsed time, stage, and hint do not all fit at
+   * the largest fonts on the round display. UP/DOWN toggles pages.
+   *
+   * Page 0: title, hero countdown, goal clock, progress bar.
+   * Page 1: hero elapsed time, stage. The hint line is shared. */
+  const int16_t title_y = oy + 2;
+  const int16_t hero_y  = title_y + FF_H_SCREEN_TITLE + 4;
+  const int16_t eta_y   = hero_y + FF_H_HERO + 6;
+  const int16_t prog_y  = eta_y + FF_H_BIG + 6;
+  const int16_t hint_y  = bounds.size.h - oy - FF_H_HINT; /* one-line hint at the very bottom */
 
-  s_title_layer = create_text_layer(GRect(ox, oy + title_y, cw, 20),
+  /* The hero row sits near the vertical centre where a round display is at its
+   * widest, so it can use a smaller horizontal inset than the other rows and
+   * still fit BITHAM_42_BOLD. */
+#ifdef PBL_ROUND
+  const int16_t hero_inset = bounds.size.w / 12;
+  const int16_t eta_inset  = bounds.size.w / 10;
+#else
+  const int16_t hero_inset = 0;
+  const int16_t eta_inset  = ox;
+#endif
+  const int16_t hero_w = bounds.size.w - 2 * hero_inset;
+
+  s_title_layer = create_text_layer(GRect(ox, title_y, cw, FF_H_SCREEN_TITLE),
                                     GTextAlignmentCenter,
-                                    FONT_KEY_GOTHIC_18_BOLD,
+                                    FF_FONT_SCREEN_TITLE,
                                     GColorBlack, GColorClear, false);
-  /* GOTHIC_28_BOLD fits all 8-char "HH:MM:SS" and 9-char "-HH:MM:SS" overtime
-   * strings without truncation on the 144-px Basalt display. */
-  s_timer_layer = create_text_layer(GRect(ox, oy + timer_y, cw, 38),
+  s_timer_layer = create_text_layer(GRect(hero_inset, hero_y, hero_w, FF_H_HERO),
                                     GTextAlignmentCenter,
-                                    FONT_KEY_GOTHIC_28_BOLD,
+                                    FF_FONT_HERO,
                                     GColorBlack, GColorClear, false);
 #if FASTFORGE_SHOW_GOAL_CLOCK
-  /* Goal wall-clock time ("Ends 14:30") in GOTHIC_24, large enough to read at a
-   * glance. The longest variant ("Ends Sun 12:30 PM") needs almost the full
-   * 144-px Basalt width, which does not fit the w/6 round inset the other rows
-   * use. This row sits at the vertical centre of the screen though, where a
-   * round display is at its widest, so it can safely halve that inset. */
-#ifdef PBL_ROUND
-  const int16_t eta_inset = bounds.size.w / 12;
-#else
-  const int16_t eta_inset = ox;
-#endif
-  s_eta_layer = create_text_layer(GRect(eta_inset, oy + 52, bounds.size.w - 2 * eta_inset, 26),
+  /* Goal wall-clock finish time, e.g. "Ends Thu 03:44" / "Goal Sun 12:30 PM".
+   * GOTHIC_28_BOLD is the largest font that still fits the longest 12-hour
+   * cross-day variant inside the round face's reduced eta inset. */
+  s_eta_layer = create_text_layer(GRect(eta_inset, eta_y,
+                                        bounds.size.w - 2 * eta_inset, FF_H_BIG),
                                   GTextAlignmentCenter,
-                                  FONT_KEY_GOTHIC_24,
+                                  FF_FONT_BIG,
                                   GColorBlack, GColorClear, false);
 #endif
-  s_detail_layer = create_text_layer(GRect(ox, oy + detail_y, cw, 24),
+  /* Page 1 reuses the detail layer as a large elapsed-time / target line.
+   * GOTHIC_28_BOLD (not the 42 pt hero) so label text like "Target 16h 00m"
+   * still fits the round face. */
+  s_detail_layer = create_text_layer(GRect(ox, oy + 50, cw, FF_H_BIG),
                                      GTextAlignmentCenter,
-                                     FONT_KEY_GOTHIC_18,
+                                     FF_FONT_BIG,
                                      GColorBlack, GColorClear, false);
-
-  s_progress_layer = layer_create(GRect(ox + 6, oy + 104, cw - 12, 12));
+  s_progress_layer = layer_create(GRect(ox + 8, prog_y, cw - 16, 14));
   layer_set_update_proc(s_progress_layer, timer_progress_update_proc);
-
-  s_stage_layer = create_text_layer(GRect(ox, oy + 118, cw, 20),
+  s_stage_layer = create_text_layer(GRect(ox, oy + 94, cw, FF_H_BODY),
                                     GTextAlignmentCenter,
-                                    FONT_KEY_GOTHIC_18_BOLD,
+                                    FF_FONT_BODY_BOLD,
                                     GColorBlack, GColorClear, false);
-  s_hint_layer = create_text_layer(GRect(ox, oy + 138, cw, 28),
+  s_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
                                    GTextAlignmentCenter,
-                                   FONT_KEY_GOTHIC_14,
+                                   FF_FONT_HINT,
                                    GColorBlack, GColorClear, true);
 
   add_text_layer(window_layer, s_title_layer);
@@ -1575,6 +1859,14 @@ static void timer_window_load(Window *window) {
   layer_add_child(window_layer, s_progress_layer);
   add_text_layer(window_layer, s_stage_layer);
   add_text_layer(window_layer, s_hint_layer);
+
+  /* Page indicator gets its own 20 px strip directly above the one-line
+   * hint, well clear of the progress bar (which sits higher up, on page 0). */
+  s_timer_indicator_layer = layer_create(GRect(ox, hint_y - 22, cw, 20));
+  layer_set_update_proc(s_timer_indicator_layer, timer_indicator_update_proc);
+  layer_add_child(window_layer, s_timer_indicator_layer);
+
+  s_timer_page = 0;
   refresh_timer_view();
 }
 
@@ -1583,6 +1875,8 @@ static void timer_window_unload(Window *window) {
   save_all_data();
   layer_destroy(s_progress_layer);
   s_progress_layer = NULL;
+  layer_destroy(s_timer_indicator_layer);
+  s_timer_indicator_layer = NULL;
   text_layer_destroy(s_title_layer);
   s_title_layer = NULL;
   text_layer_destroy(s_timer_layer);
@@ -1610,30 +1904,38 @@ static void goal_window_load(Window *window) {
   layer_set_update_proc(s_goal_background_layer, goal_background_update_proc);
   layer_add_child(window_layer, s_goal_background_layer);
 
-  s_goal_title_layer = create_text_layer(GRect(ox, oy + 20, cw, 30),
+  s_goal_title_layer = create_text_layer(GRect(ox, oy + 24, cw, FF_H_SCREEN_TITLE),
                                          GTextAlignmentCenter,
-                                         FONT_KEY_GOTHIC_28_BOLD,
+                                         FF_FONT_SCREEN_TITLE,
                                          theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_title_layer, "GOAL HIT");
 
-  s_goal_time_layer = create_text_layer(GRect(ox, oy + 56, cw, 26),
+  /* Big elapsed-time hero, same font as the countdown screen. */
+#ifdef PBL_ROUND
+  const int16_t hero_inset = bounds.size.w / 12;
+#else
+  const int16_t hero_inset = 0;
+#endif
+  s_goal_time_layer = create_text_layer(GRect(hero_inset, oy + 64,
+                                              bounds.size.w - 2 * hero_inset, FF_H_HERO),
                                         GTextAlignmentCenter,
-                                        FONT_KEY_GOTHIC_24_BOLD,
+                                        FF_FONT_HERO,
                                         theme_goal_text_color(), theme_goal_background_color(), false);
-  text_layer_set_text(s_goal_time_layer, "Elapsed 00:00:00");
+  text_layer_set_text(s_goal_time_layer, "00:00:00");
 
-  s_goal_stage_layer = create_text_layer(GRect(ox, oy + 84, cw, 24),
+  s_goal_stage_layer = create_text_layer(GRect(ox, oy + 118, cw, FF_H_BODY),
                                          GTextAlignmentCenter,
-                                         FONT_KEY_GOTHIC_18_BOLD,
+                                         FF_FONT_BODY_BOLD,
                                          theme_goal_text_color(), theme_goal_background_color(), false);
   text_layer_set_text(s_goal_stage_layer, "Stage: --");
 
-  s_goal_hint_layer = create_text_layer(GRect(ox, oy + 120, cw, 42),
+  s_goal_hint_layer = create_text_layer(GRect(ox, bounds.size.h - oy - (FF_H_HINT * 2) - 2,
+                                              cw, FF_H_HINT * 2),
                                         GTextAlignmentCenter,
-                                        FONT_KEY_GOTHIC_14_BOLD,
+                                        FF_FONT_HINT,
                                         theme_goal_text_color(), theme_goal_background_color(), true);
   /* Fast continues automatically; any key dismisses this overlay. */
-  text_layer_set_text(s_goal_hint_layer, "BACK/DN Dismiss\nSEL Stop fast");
+  text_layer_set_text(s_goal_hint_layer, "DN dismiss   SEL stop");
 
   add_text_layer(window_layer, s_goal_title_layer);
   add_text_layer(window_layer, s_goal_time_layer);
@@ -1661,13 +1963,15 @@ static void presets_window_load(Window *window) {
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
-  s_presets_menu_layer = simple_menu_layer_create(menu_bounds, window, s_presets_menu_sections, 1, NULL);
-  layer_add_child(window_layer, simple_menu_layer_get_layer(s_presets_menu_layer));
+  s_presets_menu_ctx = (FfMenuCtx){ s_presets_menu_items, PRESET_MENU_ITEM_COUNT,
+                                    "Start New Fast" };
+  s_presets_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_presets_menu_ctx);
+  layer_add_child(window_layer, menu_layer_get_layer(s_presets_menu_layer));
 }
 
 static void presets_window_unload(Window *window) {
   (void)window;
-  simple_menu_layer_destroy(s_presets_menu_layer);
+  menu_layer_destroy(s_presets_menu_layer);
   s_presets_menu_layer = NULL;
 }
 
@@ -1677,17 +1981,18 @@ static void history_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  /* Fixed title bar: "HISTORY N  S:cur/max" — matches style of other windows. */
-  int16_t title_h = 26;
-  s_history_title_layer = create_text_layer(GRect(ox, oy + 4, cw, title_h),
+  /* Fixed title bar: "HISTORY (N)". Streak counts live on the statistics
+   * screen so this title can use the largest font that fits the round face. */
+  int16_t title_h = FF_H_SCREEN_TITLE;
+  s_history_title_layer = create_text_layer(GRect(ox, oy + 2, cw, title_h),
                                             GTextAlignmentCenter,
-                                            FONT_KEY_GOTHIC_24_BOLD,
+                                            FF_FONT_SCREEN_TITLE,
                                             GColorBlack, GColorClear, false);
   add_text_layer(window_layer, s_history_title_layer);
   refresh_history_title();
 
   /* Menu starts below the title; leave symmetrical vertical inset at the bottom. */
-  int16_t title_offset = oy + 4 + title_h + 2;
+  int16_t title_offset = oy + 2 + title_h + 2;
   GRect menu_bounds = GRect(ox, title_offset, cw, bounds.size.h - title_offset - oy);
 
   s_history_menu_layer = menu_layer_create(menu_bounds);
@@ -1728,30 +2033,44 @@ static void history_edit_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_history_edit_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 24),
+  /* Six rows sized to fit the round face at the largest fonts: a bold title,
+   * three editable fields (Start/End/Note) at GOTHIC_24_BOLD, then the badge
+   * and the controls hint at GOTHIC_18. */
+  const int16_t h_title = FF_H_BODY_BOLD;
+  const int16_t h_field = FF_H_BODY_BOLD;
+  const int16_t h_badge = FF_H_SUB_BOLD;
+  const int16_t h_hint  = FF_H_SUB * 2;
+  int16_t y = oy + 2;
+
+  s_history_edit_title_layer = create_text_layer(GRect(ox, y, cw, h_title),
                                                  GTextAlignmentCenter,
-                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 FF_FONT_BODY_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_start_layer = create_text_layer(GRect(ox, oy + 30, cw, 22),
+  y += h_title + 4;
+  s_history_edit_start_layer = create_text_layer(GRect(ox, y, cw, h_field),
                                                  GTextAlignmentLeft,
-                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 FF_FONT_BODY_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_end_layer = create_text_layer(GRect(ox, oy + 54, cw, 22),
+  y += h_field + 2;
+  s_history_edit_end_layer = create_text_layer(GRect(ox, y, cw, h_field),
                                                GTextAlignmentLeft,
-                                               FONT_KEY_GOTHIC_18_BOLD,
+                                               FF_FONT_BODY_BOLD,
                                                GColorBlack, GColorClear, false);
-  s_history_edit_duration_layer = create_text_layer(GRect(ox, oy + 82, cw, 22),
+  y += h_field + 2;
+  s_history_edit_duration_layer = create_text_layer(GRect(ox, y, cw, h_field),
                                                     GTextAlignmentLeft,
-                                                    FONT_KEY_GOTHIC_18_BOLD,
+                                                    FF_FONT_BODY_BOLD,
                                                     GColorBlack, GColorClear, false);
-  s_history_edit_stage_layer = create_text_layer(GRect(ox, oy + 106, cw, 22),
+  y += h_field + 4;
+  s_history_edit_stage_layer = create_text_layer(GRect(ox, y, cw, h_badge),
                                                  GTextAlignmentLeft,
-                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 FF_FONT_SUB_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_history_edit_hint_layer = create_text_layer(GRect(ox, oy + 130, cw, 34),
+  y += h_badge + 4;
+  s_history_edit_hint_layer = create_text_layer(GRect(ox, y, cw, h_hint),
                                                 GTextAlignmentCenter,
-                                                FONT_KEY_GOTHIC_14,
-                                                GColorBlack, GColorClear, false);
+                                                FF_FONT_SUB,
+                                                GColorBlack, GColorClear, true);
 
   add_text_layer(window_layer, s_history_edit_title_layer);
   add_text_layer(window_layer, s_history_edit_start_layer);
@@ -1789,26 +2108,36 @@ static void running_edit_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_running_edit_title_layer = create_text_layer(GRect(ox, oy + 4, cw, 26),
+  /* Title + three info rows at GOTHIC_24_BOLD, controls hint at GOTHIC_18. */
+  const int16_t h_title = FF_H_BODY_BOLD;
+  const int16_t h_row   = FF_H_BODY_BOLD;
+  const int16_t h_hint  = FF_H_SUB * 2;
+  int16_t y = oy + 2;
+
+  s_running_edit_title_layer = create_text_layer(GRect(ox, y, cw, h_title),
                                                  GTextAlignmentCenter,
-                                                 FONT_KEY_GOTHIC_24_BOLD,
+                                                 FF_FONT_BODY_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_running_edit_start_layer = create_text_layer(GRect(ox, oy + 36, cw, 24),
+  y += h_title + 6;
+  s_running_edit_start_layer = create_text_layer(GRect(ox, y, cw, h_row),
                                                  GTextAlignmentLeft,
-                                                 FONT_KEY_GOTHIC_18_BOLD,
+                                                 FF_FONT_BODY_BOLD,
                                                  GColorBlack, GColorClear, false);
-  s_running_edit_elapsed_layer = create_text_layer(GRect(ox, oy + 62, cw, 24),
+  y += h_row + 4;
+  s_running_edit_elapsed_layer = create_text_layer(GRect(ox, y, cw, h_row),
                                                     GTextAlignmentLeft,
-                                                    FONT_KEY_GOTHIC_18_BOLD,
+                                                    FF_FONT_BODY_BOLD,
                                                     GColorBlack, GColorClear, false);
-  s_running_edit_goal_layer = create_text_layer(GRect(ox, oy + 88, cw, 34),
+  y += h_row + 4;
+  s_running_edit_goal_layer = create_text_layer(GRect(ox, y, cw, h_row),
                                                 GTextAlignmentLeft,
-                                                FONT_KEY_GOTHIC_18,
+                                                FF_FONT_BODY_BOLD,
                                                 GColorBlack, GColorClear, false);
-  s_running_edit_hint_layer = create_text_layer(GRect(ox, oy + 124, cw, 40),
+  y += h_row + 6;
+  s_running_edit_hint_layer = create_text_layer(GRect(ox, y, cw, h_hint),
                                                 GTextAlignmentCenter,
-                                                FONT_KEY_GOTHIC_14,
-                                                GColorBlack, GColorClear, false);
+                                                FF_FONT_SUB,
+                                                GColorBlack, GColorClear, true);
 
   add_text_layer(window_layer, s_running_edit_title_layer);
   add_text_layer(window_layer, s_running_edit_start_layer);
@@ -1837,32 +2166,84 @@ static void running_edit_window_appear(Window *window) {
   refresh_running_edit_window_content();
 }
 
+/* Lay out the stacked title/body/hint text layers inside the statistics
+ * ScrollLayer and size the scroll content to match, so the body can scroll
+ * when the wrapped GOTHIC_24_BOLD text overflows the visible window. Called
+ * after refresh_stats_window_content() writes the body text. */
+/* Enable the ScrollLayer's built-in up/down content arrows so the user can see
+ * when there is more content to scroll to with UP/DOWN. */
+static void configure_scroll_indicator(ScrollLayer *scroll, GColor background) {
+  if (!scroll) return;
+  ContentIndicator *ci = scroll_layer_get_content_indicator(scroll);
+  if (!ci) return;
+  ContentIndicatorConfig config = (ContentIndicatorConfig){
+    .layer = scroll_layer_get_layer(scroll),
+    .times_out = false,
+    .alignment = GAlignTop,
+    .colors = { .foreground = GColorBlack, .background = background }
+  };
+  content_indicator_configure_direction(ci, ContentIndicatorDirectionUp, &config);
+  config.alignment = GAlignBottom;
+  content_indicator_configure_direction(ci, ContentIndicatorDirectionDown, &config);
+}
+
+void fastforge_stats_layout_refresh(void) {
+  if (!s_stats_scroll_layer || !s_stats_body_layer || !s_stats_title_layer || !s_stats_hint_layer) {
+    return;
+  }
+  GRect frame = layer_get_frame(scroll_layer_get_layer(s_stats_scroll_layer));
+  int16_t cw = frame.size.w;
+  int16_t title_h = FF_H_SCREEN_TITLE;
+  text_layer_set_size(s_stats_title_layer, GSize(cw, title_h));
+  GSize body = text_layer_get_content_size(s_stats_body_layer);
+  if (body.w > cw) body.w = cw;
+  text_layer_set_size(s_stats_body_layer, body);
+  int16_t hint_y = title_h + 8 + body.h + 12;
+  layer_set_frame(text_layer_get_layer(s_stats_hint_layer),
+                  GRect(0, hint_y, cw, FF_H_SUB));
+  scroll_layer_set_content_size(s_stats_scroll_layer,
+                                GSize(cw, hint_y + FF_H_SUB + 4));
+}
+
 static void stats_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_stats_title_layer = create_text_layer(GRect(ox, oy + 8, cw, 26),
-                                          GTextAlignmentCenter,
-                                          FONT_KEY_GOTHIC_24_BOLD,
-                                          GColorBlack, GColorClear, false);
+  GRect frame = GRect(ox, oy, cw, bounds.size.h - 2 * oy);
+  s_stats_scroll_layer = scroll_layer_create(frame);
+  scroll_layer_set_shadow_hidden(s_stats_scroll_layer, false);
+  configure_scroll_indicator(s_stats_scroll_layer, theme_surface_background_color());
+  /* The click context is the scroll layer so the built-in scroll handlers work. */
+  window_set_click_config_provider_with_context(window, stats_click_config_provider,
+                                                 s_stats_scroll_layer);
+
+  s_stats_title_layer = text_layer_create(GRect(0, 0, cw, FF_H_SCREEN_TITLE));
+  text_layer_set_background_color(s_stats_title_layer, GColorClear);
+  text_layer_set_text_color(s_stats_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_stats_title_layer, fonts_get_system_font(FF_FONT_SCREEN_TITLE));
   text_layer_set_text(s_stats_title_layer, "STATISTICS");
 
-  s_stats_body_layer = create_text_layer(GRect(ox, oy + 40, cw, 98),
-                                         GTextAlignmentLeft,
-                                         FONT_KEY_GOTHIC_18_BOLD,
-                                         GColorBlack, GColorClear, false);
+  s_stats_body_layer = text_layer_create(GRect(0, FF_H_SCREEN_TITLE + 8, cw, 1000));
+  text_layer_set_background_color(s_stats_body_layer, GColorClear);
+  text_layer_set_text_color(s_stats_body_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_body_layer, GTextAlignmentLeft);
+  text_layer_set_font(s_stats_body_layer, fonts_get_system_font(FF_FONT_BODY_BOLD));
+  text_layer_set_overflow_mode(s_stats_body_layer, GTextOverflowModeWordWrap);
 
-  s_stats_hint_layer = create_text_layer(GRect(ox, oy + 140, cw, 24),
-                                         GTextAlignmentCenter,
-                                         FONT_KEY_GOTHIC_14_BOLD,
-                                         GColorBlack, GColorClear, false);
-  text_layer_set_text(s_stats_hint_layer, "BACK Menu");
+  s_stats_hint_layer = text_layer_create(GRect(0, 0, cw, FF_H_SUB));
+  text_layer_set_background_color(s_stats_hint_layer, GColorClear);
+  text_layer_set_text_color(s_stats_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_stats_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_stats_hint_layer, fonts_get_system_font(FF_FONT_HINT));
+  text_layer_set_text(s_stats_hint_layer, "BACK menu");
 
-  add_text_layer(window_layer, s_stats_title_layer);
-  add_text_layer(window_layer, s_stats_body_layer);
-  add_text_layer(window_layer, s_stats_hint_layer);
+  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_title_layer));
+  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_body_layer));
+  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_hint_layer));
+  layer_add_child(window_layer, scroll_layer_get_layer(s_stats_scroll_layer));
   refresh_stats_window_content();
 }
 
@@ -1874,6 +2255,8 @@ static void stats_window_unload(Window *window) {
   s_stats_body_layer = NULL;
   text_layer_destroy(s_stats_hint_layer);
   s_stats_hint_layer = NULL;
+  scroll_layer_destroy(s_stats_scroll_layer);
+  s_stats_scroll_layer = NULL;
 }
 
 static void stats_window_appear(Window *window) {
@@ -1887,26 +2270,27 @@ static void settings_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_settings_title_layer = create_text_layer(GRect(ox, oy + 6, cw, 26),
+  s_settings_title_layer = create_text_layer(GRect(ox, oy + 20, cw, FF_H_SCREEN_TITLE),
                                              GTextAlignmentCenter,
-                                             FONT_KEY_GOTHIC_24_BOLD,
+                                             FF_FONT_SCREEN_TITLE,
                                              GColorBlack, GColorClear, false);
   text_layer_set_text(s_settings_title_layer, "SETTINGS");
 
-  s_settings_target_layer = create_text_layer(GRect(ox, oy + 42, cw, 24),
+  s_settings_target_layer = create_text_layer(GRect(ox, oy + 64, cw, FF_H_BODY_BOLD),
                                               GTextAlignmentCenter,
-                                              FONT_KEY_GOTHIC_18_BOLD,
+                                              FF_FONT_BODY_BOLD,
                                               GColorBlack, GColorClear, false);
 
-  s_settings_hint_layer = create_text_layer(GRect(ox, oy + 94, cw, 54),
+  s_settings_hint_layer = create_text_layer(GRect(ox, bounds.size.h - oy - (FF_H_HINT * 2) - 4,
+                                                  cw, FF_H_HINT * 2),
                                             GTextAlignmentCenter,
-                                            FONT_KEY_GOTHIC_14,
+                                            FF_FONT_HINT,
                                             GColorBlack, GColorClear, true);
 
 #ifdef DEBUG
-  s_settings_dev_layer = create_text_layer(GRect(ox, oy + 76, cw, 18),
+  s_settings_dev_layer = create_text_layer(GRect(ox, oy + 98, cw, FF_H_SUB_BOLD),
                                            GTextAlignmentCenter,
-                                           FONT_KEY_GOTHIC_14_BOLD,
+                                           FF_FONT_SUB_BOLD,
                                            GColorBlack, GColorClear, false);
 #endif
 
@@ -1938,34 +2322,71 @@ static void settings_window_appear(Window *window) {
   refresh_settings_window_content();
 }
 
+/* Lay out the stacked title/body/hint inside the detail ScrollLayer and size
+ * the scroll content to the wrapped body, so long About/notice text scrolls. */
+void fastforge_detail_layout_refresh(void) {
+  if (!s_detail_scroll_layer || !s_placeholder_title_layer ||
+      !s_placeholder_body_layer || !s_placeholder_hint_layer) {
+    return;
+  }
+  GRect frame = layer_get_frame(scroll_layer_get_layer(s_detail_scroll_layer));
+  int16_t cw = frame.size.w;
+  int16_t title_h = FF_H_SCREEN_TITLE;
+  text_layer_set_size(s_placeholder_title_layer, GSize(cw, title_h));
+  GSize body = text_layer_get_content_size(s_placeholder_body_layer);
+  if (body.w > cw) body.w = cw;
+  text_layer_set_size(s_placeholder_body_layer, body);
+  int16_t hint_y = title_h + 8 + body.h + 12;
+  layer_set_frame(text_layer_get_layer(s_placeholder_hint_layer),
+                  GRect(0, hint_y, cw, FF_H_SUB));
+  scroll_layer_set_content_size(s_detail_scroll_layer,
+                                GSize(cw, hint_y + FF_H_SUB + 4));
+}
+
 static void detail_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
 
-  s_placeholder_title_layer = create_text_layer(GRect(ox, oy + 8, cw, 26),
-                                                GTextAlignmentCenter,
-                                                FONT_KEY_GOTHIC_24_BOLD,
-                                                GColorBlack, GColorClear, false);
-  s_placeholder_body_layer = create_text_layer(GRect(ox, oy + 40, cw, 98),
-                                               GTextAlignmentCenter,
-                                               FONT_KEY_GOTHIC_18,
-                                               GColorBlack, GColorClear, false);
-  s_placeholder_hint_layer = create_text_layer(GRect(ox, oy + 140, cw, 24),
-                                               GTextAlignmentCenter,
-                                               FONT_KEY_GOTHIC_14_BOLD,
-                                               GColorBlack, GColorClear, false);
+  GRect frame = GRect(ox, oy, cw, bounds.size.h - 2 * oy);
+  s_detail_scroll_layer = scroll_layer_create(frame);
+  scroll_layer_set_shadow_hidden(s_detail_scroll_layer, false);
+  configure_scroll_indicator(s_detail_scroll_layer, theme_surface_background_color());
+  window_set_click_config_provider_with_context(window, detail_click_config_provider,
+                                                 s_detail_scroll_layer);
 
-  add_text_layer(window_layer, s_placeholder_title_layer);
-  add_text_layer(window_layer, s_placeholder_body_layer);
-  add_text_layer(window_layer, s_placeholder_hint_layer);
+  s_placeholder_title_layer = text_layer_create(GRect(0, 0, cw, FF_H_SCREEN_TITLE));
+  text_layer_set_background_color(s_placeholder_title_layer, GColorClear);
+  text_layer_set_text_color(s_placeholder_title_layer, GColorBlack);
+  text_layer_set_text_alignment(s_placeholder_title_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_placeholder_title_layer, fonts_get_system_font(FF_FONT_SCREEN_TITLE));
+
+  s_placeholder_body_layer = text_layer_create(GRect(0, FF_H_SCREEN_TITLE + 8, cw, 1000));
+  text_layer_set_background_color(s_placeholder_body_layer, GColorClear);
+  text_layer_set_text_color(s_placeholder_body_layer, GColorBlack);
+  text_layer_set_text_alignment(s_placeholder_body_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_placeholder_body_layer, fonts_get_system_font(FF_FONT_BODY));
+  text_layer_set_overflow_mode(s_placeholder_body_layer, GTextOverflowModeWordWrap);
+
+  s_placeholder_hint_layer = text_layer_create(GRect(0, 0, cw, FF_H_SUB));
+  text_layer_set_background_color(s_placeholder_hint_layer, GColorClear);
+  text_layer_set_text_color(s_placeholder_hint_layer, GColorBlack);
+  text_layer_set_text_alignment(s_placeholder_hint_layer, GTextAlignmentCenter);
+  text_layer_set_font(s_placeholder_hint_layer, fonts_get_system_font(FF_FONT_HINT));
+
+  scroll_layer_add_child(s_detail_scroll_layer, text_layer_get_layer(s_placeholder_title_layer));
+  scroll_layer_add_child(s_detail_scroll_layer, text_layer_get_layer(s_placeholder_body_layer));
+  scroll_layer_add_child(s_detail_scroll_layer, text_layer_get_layer(s_placeholder_hint_layer));
+  layer_add_child(window_layer, scroll_layer_get_layer(s_detail_scroll_layer));
+
   /* Buffers were already filled by show_placeholder_window before the window
    * was pushed.  Set the layer pointers directly to avoid snprintf(buf, "%s",
    * buf) undefined-behaviour (self-copy clears the string on Pebble's libc). */
   text_layer_set_text(s_placeholder_title_layer, s_placeholder_title_text);
   text_layer_set_text(s_placeholder_body_layer, s_placeholder_body_text);
   text_layer_set_text(s_placeholder_hint_layer, s_placeholder_hint_text);
+  fastforge_detail_layout_refresh();
 }
 
 static void detail_window_unload(Window *window) {
@@ -1976,6 +2397,8 @@ static void detail_window_unload(Window *window) {
   s_placeholder_body_layer = NULL;
   text_layer_destroy(s_placeholder_hint_layer);
   s_placeholder_hint_layer = NULL;
+  scroll_layer_destroy(s_detail_scroll_layer);
+  s_detail_scroll_layer = NULL;
 }
 
 static void menu_window_appear(Window *window) {
@@ -2167,10 +2590,11 @@ static void init_info_windows(void) {
     .unload = settings_window_unload
   }, settings_click_config_provider);
   window_set_background_color(s_settings_window, theme_surface_background_color());
+
   s_detail_window = create_window_with_handlers((WindowHandlers) {
     .load = detail_window_load,
     .unload = detail_window_unload
-  }, placeholder_click_config_provider);
+  }, NULL);
   window_set_background_color(s_detail_window, theme_surface_background_color());
 }
 

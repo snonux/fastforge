@@ -242,6 +242,7 @@ void refresh_stats_window_content(void) {
   collect_stats_summary(&total_seconds, &longest_seconds, &completed_count, &successful_count);
   format_stats_window_body(total_seconds, longest_seconds, completed_count, successful_count);
   text_layer_set_text(s_stats_body_layer, s_stats_body_text);
+  fastforge_stats_layout_refresh();
 }
 
 void history_menu_reload(void) {

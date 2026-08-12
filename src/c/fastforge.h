@@ -25,15 +25,10 @@ _Static_assert(FASTFORGE_PERSIST_MAX_BYTES == PERSIST_DATA_MAX_LENGTH,
 _Static_assert(sizeof(FastEntry) * HISTORY_ENTRIES_PER_CHUNK <= PERSIST_DATA_MAX_LENGTH,
                "one history chunk must fit into a single persist value");
 
-/* The countdown screen's goal wall-clock row ("Ends 14:30") costs roughly
- * 560 bytes of code plus static text buffer. Aplite (original Pebble, 24 KB of
- * app RAM) links with only ~150 bytes to spare, so the row is compiled out
- * there; every other platform shows it. */
-#ifdef PBL_PLATFORM_APLITE
-#define FASTFORGE_SHOW_GOAL_CLOCK 0
-#else
+/* The countdown screen's goal wall-clock row ("Ends 14:30"). FastForge now
+ * targets only the large-memory platforms (Pebble Time 2 / emery and Pebble
+ * Round 2 / gabbro), so the row is always compiled in. */
 #define FASTFORGE_SHOW_GOAL_CLOCK 1
-#endif
 
 extern FastEntry history[MAX_FASTS];
 extern int history_count;

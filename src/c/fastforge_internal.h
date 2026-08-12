@@ -30,6 +30,8 @@ void set_entry_note_from_tag_index(FastEntry *entry, int tag_index);
 int history_note_tag_count(void);
 void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size);
 void refresh_stats_window_content(void);
+void fastforge_stats_layout_refresh(void);
+void fastforge_detail_layout_refresh(void);
 void history_menu_reload(void);
 void refresh_all_ui_state(void);
 void show_goal_reached_window(void);

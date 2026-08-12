@@ -4,9 +4,9 @@ FastForge is a Pebble watchapp for intermittent fasting tracking, built with the
 
 ## Screenshots
 
-| Pebble Round 2 — Menu | Pebble Round 2 — Countdown | Pebble Round 2 — History | Pebble Time — Countdown |
+:| Pebble Round 2 — Menu | Pebble Round 2 — Countdown | Pebble Round 2 — History | Pebble Time 2 — Countdown |
 |:---:|:---:|:---:|:---:|
-| <img src="screenshots/gabbro_01_menu.png" width="130"> | <img src="screenshots/gabbro_02_countdown.png" width="130"> | <img src="screenshots/gabbro_03_history.png" width="130"> | <img src="screenshots/basalt_01_countdown.png" width="130"> |
+| <img src="screenshots/gabbro_01_menu.png" width="130"> | <img src="screenshots/gabbro_02_countdown.png" width="130"> | <img src="screenshots/gabbro_03_history.png" width="130"> | <img src="screenshots/emery_01_countdown.png" width="130"> |
 
 ## Day-1 Setup (Fedora + Rebble SDK 4.9+)
 
@@ -45,7 +45,7 @@ Useful commands:
 
 - `just`: list commands
 - `just dev`: build + install to Pebble Round 2 (gabbro) emulator
-- `just dev-basalt`: build + install to Pebble Time (basalt) emulator
+- `just dev-emery`: build + install to Pebble Time 2 (emery) emulator
 - `just logs`: live logs from gabbro emulator
 - `just screenshot`: screenshot from gabbro emulator
 - `just kill`: stop emulator

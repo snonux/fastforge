@@ -20,16 +20,11 @@ typedef struct {
   time_t last_completed_fast_end;
 } StreakData;
 
-/* history[] is static app RAM: MAX_FASTS * sizeof(FastEntry) (44 bytes/entry on
- * 32-bit time_t platforms). Aplite (original Pebble) only has 24 KB for the
- * whole app, and the chunked persistence code in fastforge_core.c pushed it
- * past that limit, so aplite trades 16 history slots for the extra code.
- * Every other platform keeps the full 64 entries. */
-#ifdef PBL_PLATFORM_APLITE
-#define MAX_FASTS 48
-#else
+/* history[] is static app RAM: MAX_FASTS * sizeof(FastEntry) (44 bytes/entry
+ * on 32-bit time_t platforms). FastForge targets only the 128 KB app-memory
+ * platforms (Pebble Time 2 / emery and Pebble Round 2 / gabbro), so the full
+ * 64-entry history always fits. */
 #define MAX_FASTS 64
-#endif
 #define DEFAULT_TARGET_MINUTES (16 * 60)
 
 /* Pebble persistent storage stores at most 256 bytes per key. This mirrors

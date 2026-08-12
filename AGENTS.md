@@ -50,26 +50,28 @@ Daily loop after reboot:
 3. `just dev`
 4. In a second terminal run `just logs`
 
-## 4. Headless Basalt Testing
+## 4. Headless Emulator Testing
 
-When `just dev` / `just logs` are not enough for runtime verification, use a
-single headless basalt emulator and drive it through the QEMU monitor.
+FastForge targets two devices — Pebble Round 2 (`gabbro`, 260x260 round) and
+Pebble Time 2 (`emery`, 200x228 rectangular). When `just dev` / `just logs`
+are not enough for runtime verification, use a single headless emulator and
+drive it through the QEMU monitor. Substitute `gabbro` or `emery` below.
 
 ### Clean emulator reset
 
 If the emulator hangs on the Pebble boot screen or `pebble install` gets stuck
-at `Waiting for the firmware to boot`, reset the persisted basalt flash:
+at `Waiting for the firmware to boot`, reset the persisted flash:
 
 ```bash
 pebble kill
-mv ~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin \
-   ~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin.bak.$(date +%s)
+mv ~/.pebble-sdk/4.9.148/gabbro/qemu_spi_flash.bin \
+   ~/.pebble-sdk/4.9.148/gabbro/qemu_spi_flash.bin.bak.$(date +%s)
 ```
 
 Then start a fresh live session:
 
 ```bash
-pebble install -vv --emulator basalt --logs
+pebble install -vv --emulator gabbro --logs
 ```
 
 Important:
@@ -95,7 +97,7 @@ PY
 tesseract /tmp/fastforge.ppm stdout --psm 6
 ```
 
-That gives you a real basalt screen capture plus OCR for quick verification.
+That gives you a real screen capture plus OCR for quick verification.
 
 ### Send button input through the monitor
 
@@ -151,6 +153,9 @@ Commit these project files when changed:
 - `src/c/fastforge_core.c`
 - `src/c/fastforge_history.c`
 - `src/c/fastforge_internal.h`
+- `src/c/fastforge.h`
+- `src/c/fastforge_types.h`
+- `screenshots/`
 - `.gitignore`
 
 Do not commit generated artifacts:
@@ -166,14 +171,15 @@ Do not commit generated artifacts:
 - Build fails: run `just clean` then `just rebuild`.
 - Change app version: update `package.json`, then run `just dev`.
 - `Waiting for the firmware to boot` forever: reset
-  `~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin` as described in section 4.
-- `pebble logs --emulator basalt` and `pebble install --emulator basalt` each
+  `~/.pebble-sdk/4.9.148/gabbro/qemu_spi_flash.bin` (or the matching `emery`
+  path) as described in section 4.
+- `pebble logs --emulator gabbro` and `pebble install --emulator gabbro` each
   spawn their own emulator instance. For headless runtime testing, prefer one
-  `pebble install -vv --emulator basalt --logs` session and use its monitor
+  `pebble install -vv --emulator gabbro --logs` session and use its monitor
   port for screenshots/input.
 - Repeated hot reinstalls may show a `pypkjs` / `geventwebsocket` traceback in
   the toolchain logs. In the verified workflow the app still installed and ran,
   so treat that as a tool-side warning unless the watch UI actually breaks.
 
-Last updated: April 12, 2026 (follow-up fix)
+Last updated: August 12, 2026 (large-font UI, emery + gabbro only)
 Maintained for: FastForge agents

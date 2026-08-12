@@ -3,10 +3,11 @@
 # Justfile for Fedora Linux + Pebble SDK 4.9+ (2026)
 # =============================================
 
-# Default emulator: gabbro = Pebble Round 2 (new hardware, 260×260 round display)
-# Use 'just dev-basalt' / 'just debug-dev-basalt' for the older rectangular display.
+# Default emulator: gabbro = Pebble Round 2 (260×260 round display).
+# Use 'just dev-emery' / 'just debug-dev-emery' for the Pebble Time 2
+# rectangular display (200×228). These are the only two supported devices.
 emulator := "gabbro"
-emulator_old := "basalt"
+emulator_rect := "emery"
 
 # Default: show all available commands
 default:
@@ -39,26 +40,26 @@ dev:
     -pebble kill
     pebble build && pebble install --emulator {{emulator}}
 
-# Build + install on old rectangular display (basalt)
-dev-basalt:
+# Build + install on Pebble Time 2 (emery, rectangular)
+dev-emery:
     -pebble kill
-    pebble build && pebble install --emulator {{emulator_old}}
+    pebble build && pebble install --emulator {{emulator_rect}}
 
 # Show live logs (run this in a **second** terminal)
 logs:
     pebble logs --emulator {{emulator}}
 
-# Show live logs for basalt emulator
-logs-basalt:
-    pebble logs --emulator {{emulator_old}}
+# Show live logs for the Pebble Time 2 (emery) emulator
+logs-emery:
+    pebble logs --emulator {{emulator_rect}}
 
 # Take a screenshot of the emulator
 screenshot:
     pebble screenshot --emulator {{emulator}}
 
-# Take a screenshot of the basalt emulator
-screenshot-basalt:
-    pebble screenshot --emulator {{emulator_old}}
+# Take a screenshot of the Pebble Time 2 (emery) emulator
+screenshot-emery:
+    pebble screenshot --emulator {{emulator_rect}}
 
 # ─────────────────────────────────────────────
 # Emulator control
@@ -80,11 +81,11 @@ reset-flash:
     bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/gabbro/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/gabbro/qemu_spi_flash.bin
     @echo "Flash reset to factory state. Run 'just dev' to reinstall."
 
-# Reset the basalt SPI flash to factory state.
-reset-flash-basalt:
+# Reset the emery SPI flash to factory state.
+reset-flash-emery:
     -pebble kill
-    bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/basalt/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/basalt/qemu_spi_flash.bin
-    @echo "Flash reset to factory state. Run 'just dev-basalt' to reinstall."
+    bunzip2 -k -c ~/.pebble-sdk/SDKs/4.9.148/sdk-core/pebble/emery/qemu/qemu_spi_flash.bin.bz2 > ~/.pebble-sdk/4.9.148/emery/qemu_spi_flash.bin
+    @echo "Flash reset to factory state. Run 'just dev-emery' to reinstall."
 
 # ─────────────────────────────────────────────
 # Maintenance commands
@@ -117,10 +118,10 @@ debug-dev:
     -pebble kill
     DEBUG=1 pebble build && pebble install --emulator {{emulator}}
 
-# Build + install debug app on old rectangular display (basalt)
-debug-dev-basalt:
+# Build + install debug app on Pebble Time 2 (emery)
+debug-dev-emery:
     -pebble kill
-    DEBUG=1 pebble build && pebble install --emulator {{emulator_old}}
+    DEBUG=1 pebble build && pebble install --emulator {{emulator_rect}}
 
 # ─────────────────────────────────────────────
 # Debug / Testing helpers
@@ -141,9 +142,9 @@ sdk-version:
 help:
     @echo "FastForge development commands:"
     @echo "  just dev              → build + install on Round 2/gabbro (primary)"
-    @echo "  just dev-basalt       → build + install on old basalt display"
+    @echo "  just dev-emery        → build + install on Time 2/emery (rectangular)"
     @echo "  just logs             → live logs for gabbro (second terminal)"
-    @echo "  just logs-basalt      → live logs for basalt (second terminal)"
+    @echo "  just logs-emery       → live logs for emery (second terminal)"
     @echo "  just kill             → stop the emulator"
     @echo "  just clean            → remove build files"
     @echo "  just rebuild          → clean + dev"
