@@ -15,6 +15,7 @@
 #define KEY_DEV_MODE 6
 #define KEY_DEBUG_FAKE_OFFSET 7
 #define KEY_DEBUG_FAST_ORIGIN 8
+#define KEY_MIN_FAST_MIN 9
 /* History chunks occupy KEY_HISTORY_CHUNK_BASE .. +HISTORY_CHUNK_COUNT-1.
  * Start well above the scalar keys so new scalars can be added without
  * colliding with the chunk range. */
@@ -34,6 +35,7 @@ extern FastEntry history[MAX_FASTS];
 extern int history_count;
 extern FastEntry current_fast;
 extern uint16_t global_target_minutes;
+extern uint16_t global_min_fast_minutes;
 extern bool developer_mode_enabled;
 extern StreakData streak_data;
 extern AppTimer *alarm_timer;

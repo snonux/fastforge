@@ -26,6 +26,10 @@ typedef struct {
  * 64-entry history always fits. */
 #define MAX_FASTS 64
 #define DEFAULT_TARGET_MINUTES (16 * 60)
+/* Fasts shorter than this (minutes) are not stored in history. 0 = always
+ * store. The default discards accidental sub-10-minute fasts. */
+#define DEFAULT_MIN_FAST_MINUTES 10
+#define MAX_MIN_FAST_MINUTES 240
 
 /* Pebble persistent storage stores at most 256 bytes per key. This mirrors
  * PERSIST_DATA_MAX_LENGTH from pebble.h, which the host unit tests cannot

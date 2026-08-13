@@ -85,10 +85,14 @@ static TextLayer *s_goal_hint_layer;
 
 static TextLayer *s_settings_title_layer;
 static TextLayer *s_settings_target_layer;
+static TextLayer *s_settings_min_layer;
 #ifdef DEBUG
 static TextLayer *s_settings_dev_layer;
 #endif
 static TextLayer *s_settings_hint_layer;
+/* Which settings field UP/DOWN adjusts; SELECT cycles it. */
+typedef enum { SETTINGS_FIELD_TARGET = 0, SETTINGS_FIELD_MIN_FAST = 1 } SettingsField;
+static SettingsField s_settings_field = SETTINGS_FIELD_TARGET;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
@@ -123,6 +127,7 @@ static char s_stage_text[32];
 static char s_goal_time_text[24];
 static char s_goal_stage_text[24];
 static char s_settings_target_text[32];
+static char s_settings_min_text[32];
 #ifdef DEBUG
 static char s_settings_dev_text[32];
 #endif
@@ -398,22 +403,47 @@ static uint16_t clamp_default_target_minutes(int target_minutes) {
   return (uint16_t)target_minutes;
 }
 
+static uint16_t clamp_min_fast_minutes(int value) {
+  if (value < 0) {
+    return 0;
+  }
+  if (value > MAX_MIN_FAST_MINUTES) {
+    return MAX_MIN_FAST_MINUTES;
+  }
+  return (uint16_t)value;
+}
+
 static void refresh_settings_window_content(void) {
-  if (!s_settings_target_layer || !s_settings_hint_layer) {
+  if (!s_settings_target_layer || !s_settings_hint_layer || !s_settings_min_layer) {
     return;
   }
 
   snprintf(s_settings_target_text, sizeof(s_settings_target_text), "Default: %dh %02dm",
            global_target_minutes / 60, global_target_minutes % 60);
+  if (global_min_fast_minutes == 0) {
+    snprintf(s_settings_min_text, sizeof(s_settings_min_text), "Min fast: Off");
+  } else {
+    snprintf(s_settings_min_text, sizeof(s_settings_min_text), "Min fast: %dm",
+             global_min_fast_minutes);
+  }
+
+  /* The selected field is drawn black; the other is dimmed so the cursor is
+   * obvious on the mint-green settings surface. */
+  GColor sel = GColorBlack;
+  GColor dim = GColorDarkGray;
+  text_layer_set_text_color(s_settings_target_layer,
+                            s_settings_field == SETTINGS_FIELD_TARGET ? sel : dim);
+  text_layer_set_text_color(s_settings_min_layer,
+                            s_settings_field == SETTINGS_FIELD_MIN_FAST ? sel : dim);
+  text_layer_set_text(s_settings_target_layer, s_settings_target_text);
+  text_layer_set_text(s_settings_min_layer, s_settings_min_text);
 #ifdef DEBUG
   snprintf(s_settings_dev_text, sizeof(s_settings_dev_text), "Dev Mode: %s",
            developer_mode_enabled ? "ON (timer dbg)" : "OFF");
-  text_layer_set_text(s_settings_target_layer, s_settings_target_text);
   text_layer_set_text(s_settings_dev_layer, s_settings_dev_text);
-  text_layer_set_text(s_settings_hint_layer, "UP/DN Target\nSEL Dev\nBACK Save");
+  text_layer_set_text(s_settings_hint_layer, "UP/DN adjust\nSEL next / hold Dev\nBACK Save");
 #else
-  text_layer_set_text(s_settings_target_layer, s_settings_target_text);
-  text_layer_set_text(s_settings_hint_layer, "UP/DOWN Target\nBACK Save");
+  text_layer_set_text(s_settings_hint_layer, "UP/DN adjust\nSEL next field\nBACK Save");
 #endif
 }
 
@@ -423,9 +453,22 @@ static void settings_persist_and_refresh(void) {
   refresh_settings_window_content();
 }
 
-static void settings_adjust_target(int delta_minutes) {
-  global_target_minutes = clamp_default_target_minutes((int)global_target_minutes + delta_minutes);
+/* UP/DOWN adjusts the selected setting: ±30 min for the default target, ±5 min
+ * for the history minimum. */
+static void settings_adjust_field(int direction) {
+  if (s_settings_field == SETTINGS_FIELD_TARGET) {
+    global_target_minutes =
+        clamp_default_target_minutes((int)global_target_minutes + direction * 30);
+  } else {
+    global_min_fast_minutes =
+        clamp_min_fast_minutes((int)global_min_fast_minutes + direction * 5);
+  }
   settings_persist_and_refresh();
+}
+
+static void settings_cycle_field(void) {
+  s_settings_field = (SettingsField)((s_settings_field + 1) % 2);
+  refresh_settings_window_content();
 }
 
 #ifdef DEBUG
@@ -1690,17 +1733,25 @@ static void goal_click_config_provider(void *context) {
 static void settings_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  settings_adjust_target(30);
+  settings_adjust_field(+1);
 }
 
 static void settings_down_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  settings_adjust_target(-30);
+  settings_adjust_field(-1);
+}
+
+/* Short SELECT cycles between the adjustable fields (target / min fast). In
+ * DEBUG, a long SELECT toggles developer mode instead. */
+static void settings_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  settings_cycle_field();
 }
 
 #ifdef DEBUG
-static void settings_select_click_handler(ClickRecognizerRef recognizer, void *context) {
+static void settings_select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   settings_toggle_developer_mode();
@@ -1717,8 +1768,9 @@ static void settings_click_config_provider(void *context) {
   (void)context;
   window_single_click_subscribe(BUTTON_ID_UP, settings_up_click_handler);
   window_single_click_subscribe(BUTTON_ID_DOWN, settings_down_click_handler);
-#ifdef DEBUG
   window_single_click_subscribe(BUTTON_ID_SELECT, settings_select_click_handler);
+#ifdef DEBUG
+  window_long_click_subscribe(BUTTON_ID_SELECT, 500, settings_select_long_click_handler, NULL);
 #endif
   window_single_click_subscribe(BUTTON_ID_BACK, settings_back_click_handler);
 }
@@ -2385,10 +2437,15 @@ static void settings_window_load(Window *window) {
                                              GColorBlack, GColorClear, false);
   text_layer_set_text(s_settings_title_layer, "SETTINGS");
 
-  s_settings_target_layer = create_text_layer(GRect(ox, oy + 64, cw, FF_H_BODY_BOLD),
+  s_settings_target_layer = create_text_layer(GRect(ox, oy + 62, cw, FF_H_BODY_BOLD),
                                               GTextAlignmentCenter,
                                               FF_FONT_BODY_BOLD,
                                               GColorBlack, GColorClear, false);
+
+  s_settings_min_layer = create_text_layer(GRect(ox, oy + 94, cw, FF_H_BODY),
+                                          GTextAlignmentCenter,
+                                          FF_FONT_BODY,
+                                          GColorDarkGray, GColorClear, false);
 
   s_settings_hint_layer = create_text_layer(GRect(ox, bounds.size.h - oy - (FF_H_HINT * 2) - 4,
                                                   cw, FF_H_HINT * 2),
@@ -2397,14 +2454,16 @@ static void settings_window_load(Window *window) {
                                             GColorBlack, GColorClear, true);
 
 #ifdef DEBUG
-  s_settings_dev_layer = create_text_layer(GRect(ox, oy + 98, cw, FF_H_SUB_BOLD),
+  s_settings_dev_layer = create_text_layer(GRect(ox, oy + 126, cw, FF_H_SUB_BOLD),
                                            GTextAlignmentCenter,
                                            FF_FONT_SUB_BOLD,
                                            GColorBlack, GColorClear, false);
 #endif
 
+  s_settings_field = SETTINGS_FIELD_TARGET;
   add_text_layer(window_layer, s_settings_title_layer);
   add_text_layer(window_layer, s_settings_target_layer);
+  add_text_layer(window_layer, s_settings_min_layer);
 #ifdef DEBUG
   add_text_layer(window_layer, s_settings_dev_layer);
 #endif
@@ -2418,6 +2477,8 @@ static void settings_window_unload(Window *window) {
   s_settings_title_layer = NULL;
   text_layer_destroy(s_settings_target_layer);
   s_settings_target_layer = NULL;
+  text_layer_destroy(s_settings_min_layer);
+  s_settings_min_layer = NULL;
 #ifdef DEBUG
   text_layer_destroy(s_settings_dev_layer);
   s_settings_dev_layer = NULL;

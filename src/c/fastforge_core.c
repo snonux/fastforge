@@ -6,6 +6,7 @@ FastEntry history[MAX_FASTS];
 int history_count = 0;
 FastEntry current_fast = {0};
 uint16_t global_target_minutes = DEFAULT_TARGET_MINUTES;
+uint16_t global_min_fast_minutes = DEFAULT_MIN_FAST_MINUTES;
 bool developer_mode_enabled = false;
 StreakData streak_data = {0};
 AppTimer *alarm_timer = NULL;
@@ -37,6 +38,9 @@ static int clamp_history_count(int value) {
 static void normalize_loaded_data(void) {
   if (global_target_minutes == 0) {
     global_target_minutes = DEFAULT_TARGET_MINUTES;
+  }
+  if (global_min_fast_minutes > MAX_MIN_FAST_MINUTES) {
+    global_min_fast_minutes = DEFAULT_MIN_FAST_MINUTES;
   }
 
   if (current_fast.start_time != 0 && current_fast.target_minutes == 0) {
@@ -106,6 +110,7 @@ void save_all_data(void) {
   save_history_entries();
   persist_write_data(KEY_CURRENT_FAST, &current_fast, sizeof(FastEntry));
   persist_write_int(KEY_TARGET_MIN, global_target_minutes);
+  persist_write_int(KEY_MIN_FAST_MIN, global_min_fast_minutes);
   persist_write_data(KEY_STREAK_DATA, &streak_data, sizeof(StreakData));
   persist_write_bool(KEY_DEV_MODE, developer_mode_enabled);
 #ifdef DEBUG
@@ -189,6 +194,12 @@ static void load_persisted_base_data(void) {
     const int read_target = persist_read_int(KEY_TARGET_MIN);
     if (read_target > 0 && read_target <= UINT16_MAX) {
       global_target_minutes = (uint16_t)read_target;
+    }
+  }
+  if (persist_exists(KEY_MIN_FAST_MIN)) {
+    const int read_min = persist_read_int(KEY_MIN_FAST_MIN);
+    if (read_min >= 0 && read_min <= UINT16_MAX) {
+      global_min_fast_minutes = (uint16_t)read_min;
     }
   }
   if (persist_exists(KEY_STREAK_DATA)) {
@@ -432,9 +443,20 @@ bool fast_stop(void) {
   if (completed.end_time < completed.start_time) {
     completed.end_time = completed.start_time;
   }
-  append_history_entry(&completed);
-  sort_history_by_end_time();
-  recompute_streak_data_for_today();
+  time_t duration = completed.end_time - completed.start_time;
+  /* Fasts shorter than the configured minimum are discarded instead of
+   * polluting history (e.g. an accidental start/stop). A threshold of 0
+   * keeps every fast. */
+  bool stored = true;
+  if (global_min_fast_minutes > 0 &&
+      duration < (time_t)global_min_fast_minutes * 60) {
+    stored = false;
+  }
+  if (stored) {
+    append_history_entry(&completed);
+    sort_history_by_end_time();
+    recompute_streak_data_for_today();
+  }
   memset(&current_fast, 0, sizeof(current_fast));
 #ifdef DEBUG
   s_current_fast_origin_offset_seconds = 0;
@@ -446,7 +468,9 @@ bool fast_stop(void) {
   target_time = 0;
   save_all_data();
   history_menu_reload();
-  APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast and saved history_count=%d", history_count);
+  APP_LOG(APP_LOG_LEVEL_INFO, "Stopped fast (duration=%lds) %s history_count=%d",
+          (long)duration, stored ? "saved" : "discarded (below minimum)",
+          history_count);
   return true;
 }
 
