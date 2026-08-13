@@ -323,6 +323,21 @@ static GColor theme_progress_fill_color(void) {
   return is_color_platform() ? GColorJaegerGreen : GColorGreen;
 }
 
+/* Functional colour per fasting stage so the metabolic state reads at a glance
+ * on the light surface screens (history, history-edit). Chosen to stay
+ * readable on both the white and black (highlighted) menu row backgrounds. */
+static GColor stage_color_for_level(uint8_t level) {
+  if (!is_color_platform()) {
+    return GColorBlack;
+  }
+  switch (level) {
+    case 3: return GColorIslamicGreen;        /* DEEP KETOSIS  */
+    case 2: return GColorCobaltBlue;             /* EARLY KETOSIS*/
+    case 1: return GColorOrange;               /* FAT BURN     */
+    default: return GColorDarkGray;            /* GLYCOGEN/none*/
+  }
+}
+
 static bool timer_goal_reached_for_elapsed(time_t elapsed_seconds) {
   uint32_t target_seconds = current_fast.target_minutes * 60;
   return target_seconds > 0 && elapsed_seconds >= (time_t)target_seconds;
@@ -1170,6 +1185,21 @@ static void history_menu_draw_row(GContext *ctx, const Layer *cell_layer, MenuIn
   char title[24];
   char subtitle[96];
   format_history_row(row, title, sizeof(title), subtitle, sizeof(subtitle));
+
+  /* Coloured left-edge bar encodes the fast's deepest fasting stage so the
+   * history list can be scanned by metabolic state. Only stages >= 1 get a
+   * bar; a sub-Fat-Burn fast has none. */
+  int history_index = history_index_for_row(row);
+  if (history_index >= 0 && history_index < history_count) {
+    uint8_t stage = history[history_index].max_stage_reached;
+    if (stage >= 1) {
+      GColor bar = stage_color_for_level(stage);
+      graphics_context_set_fill_color(ctx, bar);
+      graphics_fill_rect(ctx, GRect(0, 0, 4, bounds.size.h), 0, GCornerNone);
+      graphics_context_set_text_color(ctx, foreground);
+    }
+  }
+
   graphics_draw_text(ctx, title,
                      fonts_get_system_font(FF_FONT_MENU_TITLE),
                      GRect(6, 2, bounds.size.w - 12, FF_H_MENU_TITLE),
@@ -1192,6 +1222,7 @@ static void refresh_history_edit_window_content(void) {
     text_layer_set_text(s_history_edit_end_layer, "");
     text_layer_set_text(s_history_edit_duration_layer, "");
     text_layer_set_text(s_history_edit_stage_layer, "");
+    text_layer_set_text_color(s_history_edit_stage_layer, GColorBlack);
     text_layer_set_text(s_history_edit_hint_layer, "BACK");
     return;
   }
@@ -1200,7 +1231,8 @@ static void refresh_history_edit_window_content(void) {
   char end_text[24];
   char duration_text[20];
   char note_text[40];
-  const char *badge_label = milestone_badge_label_for_level(stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft)));
+  uint8_t stage_level = stage_level_for_elapsed(entry_duration_seconds(&s_history_edit_draft));
+  const char *badge_label = milestone_badge_label_for_level(stage_level);
   format_entry_datetime(s_history_edit_draft.start_time, start_text, sizeof(start_text));
   format_entry_datetime(s_history_edit_draft.end_time, end_text, sizeof(end_text));
   format_duration_hours_minutes(entry_duration_seconds(&s_history_edit_draft), duration_text, sizeof(duration_text));
@@ -1223,6 +1255,7 @@ static void refresh_history_edit_window_content(void) {
   text_layer_set_text(s_history_edit_end_layer, s_history_edit_end_text);
   text_layer_set_text(s_history_edit_duration_layer, s_history_edit_duration_text);
   text_layer_set_text(s_history_edit_stage_layer, s_history_edit_stage_text);
+  text_layer_set_text_color(s_history_edit_stage_layer, stage_color_for_level(stage_level));
   text_layer_set_text(s_history_edit_hint_layer, s_history_edit_hint_text);
 }
 
@@ -2459,6 +2492,19 @@ void refresh_stats_window_content(void) {
   }
 
   text_layer_set_text(s_stats_title_layer, label);
+  /* Give each statistic its own accent colour so the paged stats read as a
+   * colour-coded set; the empty placeholder stays neutral. */
+  GColor value_color = GColorBlack;
+  if (completed_count != 0 && is_color_platform()) {
+    switch (s_stats_page) {
+      case 0: value_color = GColorDukeBlue; break;            /* AVERAGE */
+      case 1: value_color = GColorIndigo; break;              /* TOTAL   */
+      case 2: value_color = GColorIslamicGreen; break;        /* SUCCESS */
+      case 3: value_color = GColorDarkCandyAppleRed; break;  /* LONGEST */
+      default: value_color = GColorOrange; break;             /* STREAK  */
+    }
+  }
+  text_layer_set_text_color(s_stats_value_layer, value_color);
   text_layer_set_text(s_stats_value_layer, value_text);
   text_layer_set_text(s_stats_sub_layer, sub_text);
   if (s_stats_indicator_layer) {
