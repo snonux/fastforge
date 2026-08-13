@@ -8,7 +8,6 @@ extern bool s_fake_time_enabled;
 extern int32_t s_fake_time_offset_seconds;
 extern int32_t s_current_fast_origin_offset_seconds;
 extern MenuLayer *s_history_menu_layer;
-extern TextLayer *s_stats_body_layer;
 
 time_t fastforge_now(void);
 void recompute_streak_data_for_today(void);
@@ -29,8 +28,9 @@ int note_tag_index_for_entry(const FastEntry *entry);
 void set_entry_note_from_tag_index(FastEntry *entry, int tag_index);
 int history_note_tag_count(void);
 void format_history_row(int row, char *title, size_t title_size, char *subtitle, size_t subtitle_size);
+void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds,
+                           int *completed_count, int *successful_count);
 void refresh_stats_window_content(void);
-void fastforge_stats_layout_refresh(void);
 void fastforge_detail_layout_refresh(void);
 void history_menu_reload(void);
 void refresh_all_ui_state(void);

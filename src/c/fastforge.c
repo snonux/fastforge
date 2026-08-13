@@ -94,8 +94,13 @@ static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
 static TextLayer *s_history_title_layer;
 static TextLayer *s_stats_title_layer;
-TextLayer *s_stats_body_layer;
+static TextLayer *s_stats_value_layer;
+static TextLayer *s_stats_sub_layer;
 static TextLayer *s_stats_hint_layer;
+static Layer *s_stats_indicator_layer;
+static uint8_t s_stats_page = 0;
+static uint8_t s_stats_page_count = 1;
+#define STATS_PAGE_COUNT 5
 static TextLayer *s_history_edit_title_layer;
 static TextLayer *s_history_edit_start_layer;
 static TextLayer *s_history_edit_end_layer;
@@ -153,10 +158,9 @@ static char s_debug_menu_clock_text[40];
 static uint8_t s_timer_page = 0;
 #define TIMER_PAGE_COUNT 2
 
-/* ScrollLayer-backed screens (statistics, detail/about) hold a stack of text
- * layers so each line can use its own font while still scrolling when the body
- * overflows the visible area. */
-static ScrollLayer *s_stats_scroll_layer;
+/* The detail/about screen is ScrollLayer-backed so its long body text can
+ * scroll; the statistics screen is now paged (one large-font stat per page).
+ */
 static ScrollLayer *s_detail_scroll_layer;
 
 typedef enum {
@@ -172,7 +176,6 @@ static void sync_main_menu_state(void);
 static void refresh_running_edit_window_content(void);
 static void refresh_settings_window_content(void);
 static MenuLayer *create_ff_menu_layer(Window *window, GRect bounds, FfMenuCtx *ctx);
-void fastforge_stats_layout_refresh(void);
 void fastforge_detail_layout_refresh(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
@@ -1726,20 +1729,38 @@ static void stats_dismiss_handler(ClickRecognizerRef recognizer, void *context) 
   window_stack_remove(s_stats_window, true);
 }
 
+/* UP/DOWN page through the per-stat sub-screens (wrapping, like the timer).
+ * SELECT/BACK dismiss back to the menu. */
+static void stats_up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  if (s_stats_page == 0) {
+    s_stats_page = s_stats_page_count - 1;
+  } else {
+    s_stats_page--;
+  }
+  refresh_stats_window_content();
+}
+
+static void stats_down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  s_stats_page = (uint8_t)((s_stats_page + 1) % s_stats_page_count);
+  refresh_stats_window_content();
+}
+
 static void detail_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
   window_stack_remove(s_detail_window, true);
 }
 
-/* ScrollLayer-backed screens: UP/DOWN scroll the content, SELECT/BACK dismiss.
- * The ScrollLayer pointer is passed as the click context (via
- * window_set_click_config_provider_with_context) so the built-in scroll click
- * handlers receive the layer they operate on. */
+/* Statistics screen: UP/DOWN page through the large-font per-stat
+ * sub-screens; SELECT/BACK dismiss. */
 static void stats_click_config_provider(void *context) {
   (void)context;
-  window_single_click_subscribe(BUTTON_ID_UP, scroll_layer_scroll_up_click_handler);
-  window_single_click_subscribe(BUTTON_ID_DOWN, scroll_layer_scroll_down_click_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, stats_up_click_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, stats_down_click_handler);
   window_single_click_subscribe(BUTTON_ID_SELECT, stats_dismiss_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, stats_dismiss_handler);
 }
@@ -2169,10 +2190,8 @@ static void running_edit_window_appear(Window *window) {
   refresh_running_edit_window_content();
 }
 
-/* Lay out the stacked title/body/hint text layers inside the statistics
- * ScrollLayer and size the scroll content to match, so the body can scroll
- * when the wrapped GOTHIC_24_BOLD text overflows the visible window. Called
- * after refresh_stats_window_content() writes the body text. */
+/* Lay out the stacked title/body text layers inside the detail/about
+ * ScrollLayer (configure_scroll_indicator is used by the detail screen). */
 /* Enable the ScrollLayer's built-in up/down content arrows so the user can see
  * when there is more content to scroll to with UP/DOWN. */
 static void configure_scroll_indicator(ScrollLayer *scroll, GColor background) {
@@ -2190,22 +2209,101 @@ static void configure_scroll_indicator(ScrollLayer *scroll, GColor background) {
   content_indicator_configure_direction(ci, ContentIndicatorDirectionDown, &config);
 }
 
-void fastforge_stats_layout_refresh(void) {
-  if (!s_stats_scroll_layer || !s_stats_body_layer || !s_stats_title_layer || !s_stats_hint_layer) {
+/* Page indicator for the statistics sub-screens: up/down chevrons (active
+ * when a previous/next page exists) and an "n/N" counter. Mirrors the timer
+ * indicator; active chevrons are black on the light stats surface. */
+static void stats_indicator_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  int16_t cx = bounds.size.w / 2;
+  int16_t cy = bounds.size.h / 2;
+  GColor active = GColorBlack;
+  GColor inactive = GColorLightGray;
+  bool up = (s_stats_page > 0);
+  bool down = (s_stats_page < s_stats_page_count - 1);
+  timer_chevron(ctx, cx - 30, cy, true,  up   ? active : inactive);
+  timer_chevron(ctx, cx + 30, cy, false, down ? active : inactive);
+  char label[8];
+  snprintf(label, sizeof(label), "%u/%u", (unsigned)(s_stats_page + 1),
+           (unsigned)s_stats_page_count);
+  graphics_context_set_text_color(ctx, active);
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(cx - 20, cy - 8, 40, 16),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+/* Build the label / large value / secondary line for the current stats page.
+ * Pages: AVERAGE, TOTAL, SUCCESS, LONGEST, STREAK. When no fast has been
+ * completed yet, a single placeholder page is shown instead. */
+void refresh_stats_window_content(void) {
+  if (!s_stats_value_layer) {
     return;
   }
-  GRect frame = layer_get_frame(scroll_layer_get_layer(s_stats_scroll_layer));
-  int16_t cw = frame.size.w;
-  int16_t title_h = FF_H_SCREEN_TITLE;
-  text_layer_set_size(s_stats_title_layer, GSize(cw, title_h));
-  GSize body = text_layer_get_content_size(s_stats_body_layer);
-  if (body.w > cw) body.w = cw;
-  text_layer_set_size(s_stats_body_layer, body);
-  int16_t hint_y = title_h + 8 + body.h + 12;
-  layer_set_frame(text_layer_get_layer(s_stats_hint_layer),
-                  GRect(0, hint_y, cw, FF_H_SUB));
-  scroll_layer_set_content_size(s_stats_scroll_layer,
-                                GSize(cw, hint_y + FF_H_SUB + 4));
+
+  time_t total_seconds = 0;
+  time_t longest_seconds = 0;
+  int completed_count = 0;
+  int successful_count = 0;
+  collect_stats_summary(&total_seconds, &longest_seconds, &completed_count,
+                        &successful_count);
+
+  s_stats_page_count = (completed_count == 0) ? 1 : STATS_PAGE_COUNT;
+  if (s_stats_page >= s_stats_page_count) {
+    s_stats_page = 0;
+  }
+
+  static char value_text[24];
+  static char sub_text[32];
+  const char *label;
+  char dur_text[20];
+
+  if (completed_count == 0) {
+    label = "STATISTICS";
+    snprintf(value_text, sizeof(value_text), "No fasts");
+    snprintf(sub_text, sizeof(sub_text), "Start a fast");
+  } else {
+    int success_rate = (successful_count * 100 + completed_count / 2) / completed_count;
+    switch (s_stats_page) {
+      case 0: /* AVERAGE */
+        label = "AVERAGE";
+        format_duration_hours_minutes(total_seconds / completed_count,
+                                       dur_text, sizeof(dur_text));
+        snprintf(value_text, sizeof(value_text), "%s", dur_text);
+        snprintf(sub_text, sizeof(sub_text), "over %d fasts", completed_count);
+        break;
+      case 1: /* TOTAL */
+        label = "TOTAL";
+        format_duration_hours_minutes(total_seconds, dur_text, sizeof(dur_text));
+        snprintf(value_text, sizeof(value_text), "%s", dur_text);
+        snprintf(sub_text, sizeof(sub_text), "%d fasts", completed_count);
+        break;
+      case 2: /* SUCCESS */
+        label = "SUCCESS";
+        snprintf(value_text, sizeof(value_text), "%d%%", success_rate);
+        snprintf(sub_text, sizeof(sub_text), "%d of %d met goal",
+                 successful_count, completed_count);
+        break;
+      case 3: /* LONGEST */
+        label = "LONGEST";
+        format_duration_hours_minutes(longest_seconds, dur_text, sizeof(dur_text));
+        snprintf(value_text, sizeof(value_text), "%s", dur_text);
+        snprintf(sub_text, sizeof(sub_text), "best single fast");
+        break;
+      default: /* STREAK */
+        label = "STREAK";
+        snprintf(value_text, sizeof(value_text), "%u / %u",
+                 streak_data.current_streak, streak_data.longest_streak);
+        snprintf(sub_text, sizeof(sub_text), "current / best");
+        break;
+    }
+  }
+
+  text_layer_set_text(s_stats_title_layer, label);
+  text_layer_set_text(s_stats_value_layer, value_text);
+  text_layer_set_text(s_stats_sub_layer, sub_text);
+  if (s_stats_indicator_layer) {
+    layer_set_hidden(s_stats_indicator_layer, s_stats_page_count <= 1);
+    layer_mark_dirty(s_stats_indicator_layer);
+  }
 }
 
 static void stats_window_load(Window *window) {
@@ -2213,40 +2311,46 @@ static void stats_window_load(Window *window) {
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
+  int16_t title_y = oy + 2;
+  int16_t value_y = title_y + FF_H_SCREEN_TITLE + 4;
+  int16_t sub_y    = value_y + FF_H_HERO + 6;
+  int16_t hint_y   = bounds.size.h - oy - FF_H_HINT;
 
-  GRect frame = GRect(ox, oy, cw, bounds.size.h - 2 * oy);
-  s_stats_scroll_layer = scroll_layer_create(frame);
-  scroll_layer_set_shadow_hidden(s_stats_scroll_layer, false);
-  configure_scroll_indicator(s_stats_scroll_layer, theme_surface_background_color());
-  /* The click context is the scroll layer so the built-in scroll handlers work. */
-  window_set_click_config_provider_with_context(window, stats_click_config_provider,
-                                                 s_stats_scroll_layer);
+  /* The hero value uses the same reduced horizontal inset as the timer hero so
+   * BITHAM_42_BOLD fits the round face; the label/sub lines use the content
+   * width. */
+#ifdef PBL_ROUND
+  int16_t hero_inset = bounds.size.w / 12;
+#else
+  int16_t hero_inset = 0;
+#endif
+  int16_t hero_w = bounds.size.w - 2 * hero_inset;
 
-  s_stats_title_layer = text_layer_create(GRect(0, 0, cw, FF_H_SCREEN_TITLE));
-  text_layer_set_background_color(s_stats_title_layer, GColorClear);
-  text_layer_set_text_color(s_stats_title_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_title_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_stats_title_layer, fonts_get_system_font(FF_FONT_SCREEN_TITLE));
-  text_layer_set_text(s_stats_title_layer, "STATISTICS");
+  window_set_click_config_provider(window, stats_click_config_provider);
 
-  s_stats_body_layer = text_layer_create(GRect(0, FF_H_SCREEN_TITLE + 8, cw, 1000));
-  text_layer_set_background_color(s_stats_body_layer, GColorClear);
-  text_layer_set_text_color(s_stats_body_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_body_layer, GTextAlignmentLeft);
-  text_layer_set_font(s_stats_body_layer, fonts_get_system_font(FF_FONT_BODY_BOLD));
-  text_layer_set_overflow_mode(s_stats_body_layer, GTextOverflowModeWordWrap);
-
-  s_stats_hint_layer = text_layer_create(GRect(0, 0, cw, FF_H_SUB));
-  text_layer_set_background_color(s_stats_hint_layer, GColorClear);
-  text_layer_set_text_color(s_stats_hint_layer, GColorBlack);
-  text_layer_set_text_alignment(s_stats_hint_layer, GTextAlignmentCenter);
-  text_layer_set_font(s_stats_hint_layer, fonts_get_system_font(FF_FONT_HINT));
+  s_stats_title_layer = create_text_layer(GRect(ox, title_y, cw, FF_H_SCREEN_TITLE),
+                                          GTextAlignmentCenter, FF_FONT_SCREEN_TITLE,
+                                          GColorBlack, GColorClear, false);
+  s_stats_value_layer = create_text_layer(GRect(hero_inset, value_y, hero_w, FF_H_HERO),
+                                          GTextAlignmentCenter, FF_FONT_HERO,
+                                          GColorBlack, GColorClear, false);
+  s_stats_sub_layer = create_text_layer(GRect(ox, sub_y, cw, FF_H_BODY),
+                                        GTextAlignmentCenter, FF_FONT_BODY_BOLD,
+                                        GColorBlack, GColorClear, false);
+  s_stats_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
+                                         GTextAlignmentCenter, FF_FONT_HINT,
+                                         GColorBlack, GColorClear, false);
   text_layer_set_text(s_stats_hint_layer, "BACK menu");
 
-  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_title_layer));
-  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_body_layer));
-  scroll_layer_add_child(s_stats_scroll_layer, text_layer_get_layer(s_stats_hint_layer));
-  layer_add_child(window_layer, scroll_layer_get_layer(s_stats_scroll_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_value_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_sub_layer));
+  s_stats_indicator_layer = layer_create(GRect(ox, hint_y - 22, cw, 20));
+  layer_set_update_proc(s_stats_indicator_layer, stats_indicator_update_proc);
+  layer_add_child(window_layer, s_stats_indicator_layer);
+  layer_add_child(window_layer, text_layer_get_layer(s_stats_hint_layer));
+
+  s_stats_page = 0;
   refresh_stats_window_content();
 }
 
@@ -2254,12 +2358,14 @@ static void stats_window_unload(Window *window) {
   (void)window;
   text_layer_destroy(s_stats_title_layer);
   s_stats_title_layer = NULL;
-  text_layer_destroy(s_stats_body_layer);
-  s_stats_body_layer = NULL;
+  text_layer_destroy(s_stats_value_layer);
+  s_stats_value_layer = NULL;
+  text_layer_destroy(s_stats_sub_layer);
+  s_stats_sub_layer = NULL;
   text_layer_destroy(s_stats_hint_layer);
   s_stats_hint_layer = NULL;
-  scroll_layer_destroy(s_stats_scroll_layer);
-  s_stats_scroll_layer = NULL;
+  layer_destroy(s_stats_indicator_layer);
+  s_stats_indicator_layer = NULL;
 }
 
 static void stats_window_appear(Window *window) {

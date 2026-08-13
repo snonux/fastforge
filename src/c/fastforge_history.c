@@ -16,8 +16,6 @@ static const char *const s_note_tags[] = {
   "rough day"
 };
 
-static char s_stats_body_text[160];
-
 static int compare_history_entries_by_end_time(const void *a, const void *b) {
   const FastEntry *entry_a = a;
   const FastEntry *entry_b = b;
@@ -155,8 +153,8 @@ void format_history_row(int row, char *title, size_t title_size, char *subtitle,
   format_history_row_impl(row, title, title_size, subtitle, subtitle_size);
 }
 
-static void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds,
-                                  int *completed_count, int *successful_count) {
+void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds,
+                          int *completed_count, int *successful_count) {
   time_t total_seconds_value = 0;
   time_t longest_seconds_value = 0;
   int completed_count_value = 0;
@@ -191,58 +189,6 @@ static void collect_stats_summary(time_t *total_seconds, time_t *longest_seconds
   if (successful_count) {
     *successful_count = successful_count_value;
   }
-}
-
-static void format_stats_window_body(time_t total_seconds, time_t longest_seconds,
-                                     int completed_count, int successful_count) {
-  if (completed_count == 0) {
-    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
-             "No completed fasts yet.\n"
-             "Start and stop your first\n"
-             "fast to populate stats.\n"
-             "Streak: %u current / %u best",
-             streak_data.current_streak,
-             streak_data.longest_streak);
-  } else {
-    char avg_text[20];
-    char total_text[20];
-    char longest_text[20];
-    time_t average_seconds = total_seconds / completed_count;
-    int success_rate = (successful_count * 100 + completed_count / 2) / completed_count;
-
-    format_duration_hours_minutes(average_seconds, avg_text, sizeof(avg_text));
-    format_duration_hours_minutes(total_seconds, total_text, sizeof(total_text));
-    format_duration_hours_minutes(longest_seconds, longest_text, sizeof(longest_text));
-    snprintf(s_stats_body_text, sizeof(s_stats_body_text),
-             "Avg fast: %s\n"
-             "Total fasted: %s\n"
-             "Success: %d%% (%d/%d)\n"
-             "Longest: %s\n"
-             "Streak: %u / %u",
-             avg_text,
-             total_text,
-             success_rate,
-             successful_count,
-             completed_count,
-             longest_text,
-             streak_data.current_streak,
-             streak_data.longest_streak);
-  }
-}
-
-void refresh_stats_window_content(void) {
-  if (!s_stats_body_layer) {
-    return;
-  }
-
-  time_t total_seconds = 0;
-  time_t longest_seconds = 0;
-  int completed_count = 0;
-  int successful_count = 0;
-  collect_stats_summary(&total_seconds, &longest_seconds, &completed_count, &successful_count);
-  format_stats_window_body(total_seconds, longest_seconds, completed_count, successful_count);
-  text_layer_set_text(s_stats_body_layer, s_stats_body_text);
-  fastforge_stats_layout_refresh();
 }
 
 void history_menu_reload(void) {
