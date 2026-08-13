@@ -33,6 +33,7 @@ enum {
 static Window *s_menu_window;
 static Window *s_timer_window;
 static Window *s_goal_window;
+static Window *s_stop_confirm_window;
 static Window *s_presets_window;
 static Window *s_settings_window;
 static Window *s_stats_window;
@@ -83,6 +84,9 @@ static TextLayer *s_goal_title_layer;
 static TextLayer *s_goal_time_layer;
 static TextLayer *s_goal_stage_layer;
 static TextLayer *s_goal_hint_layer;
+static TextLayer *s_stop_confirm_title_layer;
+static TextLayer *s_stop_confirm_body_layer;
+static TextLayer *s_stop_confirm_hint_layer;
 
 static TextLayer *s_settings_title_layer;
 static TextLayer *s_settings_target_layer;
@@ -137,6 +141,7 @@ static char s_settings_dev_text[32];
 #endif
 static char s_menu_stop_subtitle[32];
 static char s_menu_cancel_subtitle[32];
+static char s_stop_confirm_body_text[40];
 static char s_history_title_text[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
@@ -186,6 +191,7 @@ static void refresh_running_edit_window_content(void);
 static void refresh_settings_window_content(void);
 static MenuLayer *create_ff_menu_layer(Window *window, GRect bounds, FfMenuCtx *ctx);
 void fastforge_detail_layout_refresh(void);
+static void show_stop_confirmation(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
 #endif
@@ -1517,12 +1523,12 @@ static void menu_current_timer_callback(int index, void *context) {
 static void menu_stop_current_callback(int index, void *context) {
   (void)index;
   (void)context;
-  if (!fast_stop()) {
+  if (!fast_is_running()) {
     show_placeholder_window("NOT RUNNING", "There is no active fast to stop.", "BACK Menu");
     return;
   }
-  show_placeholder_window("FAST STOPPED", "Current fast saved to history.", "BACK Menu");
-  refresh_all_ui_state();
+  /* Ask whether to save to history or discard before stopping. */
+  show_stop_confirmation();
 }
 
 /* Cancel discards the running fast without saving it to history. */
@@ -1654,11 +1660,12 @@ static void timer_select_click_handler(ClickRecognizerRef recognizer, void *cont
   (void)recognizer;
   (void)context;
   if (fast_is_running()) {
-    fast_stop();
+    /* Ask before stopping: save to history or discard. */
+    show_stop_confirmation();
   } else {
     fast_start(0);
+    refresh_all_ui_state();
   }
-  refresh_all_ui_state();
 }
 
 /* UP/DOWN switch between the two timer sub-screens (hero countdown page and
@@ -1733,6 +1740,44 @@ static void goal_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_DOWN, goal_window_continue_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, goal_window_continue_handler);
   window_single_click_subscribe(BUTTON_ID_UP, goal_window_continue_handler);
+}
+
+/* Stop-confirmation window (yz0): instead of silently stopping+saving, ask
+ * the user whether to save the fast to history or discard it. Shown when the
+ * user stops a running fast (timer SELECT, or the menu "Stop Current Fast").
+ * The body shows the elapsed duration so the choice is informed. */
+
+static void stop_confirm_save_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  /* fast_stop honours the configured minimum: a sub-minimum fast is discarded
+   * even if the user picks Save. */
+  fast_stop();
+  window_stack_remove(s_stop_confirm_window, true);
+  refresh_all_ui_state();
+}
+
+static void stop_confirm_discard_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  fast_cancel();
+  window_stack_remove(s_stop_confirm_window, true);
+  refresh_all_ui_state();
+}
+
+static void stop_confirm_back_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  /* Cancel the stop: return to the running fast, change nothing. */
+  window_stack_remove(s_stop_confirm_window, true);
+}
+
+static void stop_confirm_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, stop_confirm_save_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, stop_confirm_save_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, stop_confirm_discard_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, stop_confirm_back_handler);
 }
 
 static void settings_up_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -2037,6 +2082,65 @@ static void goal_window_unload(Window *window) {
   s_goal_stage_layer = NULL;
   text_layer_destroy(s_goal_hint_layer);
   s_goal_hint_layer = NULL;
+}
+
+static void stop_confirm_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
+  int16_t title_y = oy + 2;
+  int16_t hint_y = bounds.size.h - oy - FF_H_HINT;
+  int16_t body_y = title_y + FF_H_SCREEN_TITLE + 12;
+
+  window_set_click_config_provider(window, stop_confirm_click_config_provider);
+
+  s_stop_confirm_title_layer = create_text_layer(GRect(ox, title_y, cw, FF_H_SCREEN_TITLE),
+                                                  GTextAlignmentCenter, FF_FONT_SCREEN_TITLE,
+                                                  GColorBlack, GColorClear, false);
+  text_layer_set_text(s_stop_confirm_title_layer, "STOP FAST?");
+
+  s_stop_confirm_body_layer = create_text_layer(GRect(ox, body_y, cw, hint_y - body_y - 4),
+                                                 GTextAlignmentCenter, FF_FONT_SUB,
+                                                 GColorBlack, GColorClear, true);
+  text_layer_set_text(s_stop_confirm_body_layer, s_stop_confirm_body_text);
+
+  s_stop_confirm_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
+                                                  GTextAlignmentCenter, FF_FONT_HINT,
+                                                  GColorBlack, GColorClear, false);
+  text_layer_set_text(s_stop_confirm_hint_layer, "SEL save  DN discard");
+
+  layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_body_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_hint_layer));
+}
+
+static void stop_confirm_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_stop_confirm_title_layer);
+  s_stop_confirm_title_layer = NULL;
+  text_layer_destroy(s_stop_confirm_body_layer);
+  s_stop_confirm_body_layer = NULL;
+  text_layer_destroy(s_stop_confirm_hint_layer);
+  s_stop_confirm_hint_layer = NULL;
+}
+
+static void show_stop_confirmation(void) {
+  if (!fast_is_running()) {
+    return;
+  }
+  time_t elapsed = fastforge_now() - current_fast.start_time;
+  if (elapsed < 0) {
+    elapsed = 0;
+  }
+  char elapsed_text[12];
+  format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
+  snprintf(s_stop_confirm_body_text, sizeof(s_stop_confirm_body_text),
+           "Fasted %s\nSave to history?", elapsed_text);
+  if (s_stop_confirm_body_layer) {
+    text_layer_set_text(s_stop_confirm_body_layer, s_stop_confirm_body_text);
+  }
+  safe_push_window(s_stop_confirm_window, true);
 }
 
 static void presets_window_load(Window *window) {
@@ -2781,6 +2885,12 @@ static void init_primary_windows(void) {
   }, goal_click_config_provider);
   window_set_background_color(s_goal_window, theme_goal_background_color());
 
+  s_stop_confirm_window = create_window_with_handlers((WindowHandlers) {
+    .load = stop_confirm_window_load,
+    .unload = stop_confirm_window_unload
+  }, NULL);
+  window_set_background_color(s_stop_confirm_window, theme_surface_background_color());
+
   s_presets_window = create_window_with_handlers((WindowHandlers) {
     .load = presets_window_load,
     .unload = presets_window_unload
@@ -2872,6 +2982,7 @@ static void destroy_windows(void) {
   window_destroy(s_history_window);
   window_destroy(s_presets_window);
   window_destroy(s_goal_window);
+  window_destroy(s_stop_confirm_window);
   window_destroy(s_timer_window);
   window_destroy(s_menu_window);
 }
