@@ -53,14 +53,22 @@ static char s_menu_resume_subtitle[40];
 static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
 
 /* Context passed to the generic MenuLayer callbacks so the same draw/select
- * code serves the main, preset, and debug menus. */
+ * code serves the main, preset, and debug menus.
+ *
+ * `map` is an optional indirection table: when non-NULL, menu row R is backed
+ * by items[map[R]] instead of items[R]. The main menu uses this to hide items
+ * that make no sense in the current state (e.g. "Stop Current Fast" when no
+ * fast is running). Preset/debug menus leave `map` NULL for an identity map. */
 typedef struct {
   const SimpleMenuItem *items;
   int count;
   const char *header;
+  const int *map;
 } FfMenuCtx;
 static FfMenuCtx s_main_menu_ctx;
 static FfMenuCtx s_presets_menu_ctx;
+/* Visible-row indirection for the main menu, rebuilt by sync_main_menu_state. */
+static int s_main_menu_map[MAIN_MENU_ITEM_COUNT];
 #ifdef DEBUG
 static FfMenuCtx s_debug_menu_ctx;
 #endif
@@ -625,7 +633,7 @@ static void debug_window_load(Window *window) {
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   debug_refresh_menu();
   s_debug_menu_ctx = (FfMenuCtx){ s_debug_menu_items, (int)ARRAY_LENGTH(s_debug_menu_items),
-                                  s_debug_menu_clock_text };
+                                  s_debug_menu_clock_text, NULL };
   s_debug_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_debug_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_debug_menu_layer));
 }
@@ -919,6 +927,34 @@ static void refresh_goal_window_content(void) {
   text_layer_set_text(s_goal_stage_layer, s_goal_stage_text);
 }
 
+/* Whether a main-menu item is relevant in the current state. Items that are
+ * only meaningful with (or without) a running fast are hidden rather than
+ * left as dead-end placeholder screens, so the menu only ever offers actions
+ * the user can actually take. History/Statistics/Settings/About stay visible
+ * in every state because they have their own empty-state messaging.
+ *
+ * sync_main_menu_state() rebuilds the visible-row map from this predicate on
+ * every menu appear and after every fast start/stop/cancel/resume (via
+ * refresh_all_ui_state). History edits that change history_count rely on the
+ * menu_window_appear handler to re-sync when the user returns to the menu. */
+static bool main_menu_item_is_visible(int index) {
+  bool running = fast_is_running();
+  switch (index) {
+    case MAIN_MENU_INDEX_START_NEW:       return !running;
+    case MAIN_MENU_INDEX_RESUME_LAST:     return !running && history_count > 0;
+    /* The three running-only items below are hidden when idle so the menu never
+     * offers a dead-end "not running" placeholder. */
+    case MAIN_MENU_INDEX_CURRENT_TIMER:   return running;
+    case MAIN_MENU_INDEX_STOP_CURRENT:    return running;
+    case MAIN_MENU_INDEX_CANCEL_CURRENT:  return running;
+    case MAIN_MENU_INDEX_HISTORY:
+    case MAIN_MENU_INDEX_STATS:
+    case MAIN_MENU_INDEX_SETTINGS:
+    case MAIN_MENU_INDEX_ABOUT:
+    default:                               return true;
+  }
+}
+
 static void sync_main_menu_state(void) {
   if (fast_is_running()) {
     snprintf(s_menu_stop_subtitle, sizeof(s_menu_stop_subtitle), "End now and save");
@@ -942,8 +978,27 @@ static void sync_main_menu_state(void) {
   s_main_menu_items[MAIN_MENU_INDEX_CANCEL_CURRENT].subtitle = s_menu_cancel_subtitle;
   s_main_menu_items[MAIN_MENU_INDEX_RESUME_LAST].subtitle = s_menu_resume_subtitle;
 
+  /* Rebuild the visible-row map and publish the live row count to the menu
+   * context so the MenuLayer draws/selects only relevant items. */
+  int visible = 0;
+  for (int i = 0; i < MAIN_MENU_ITEM_COUNT; i++) {
+    if (main_menu_item_is_visible(i)) {
+      s_main_menu_map[visible++] = i;
+    }
+  }
+  s_main_menu_ctx.count = visible;
+
   if (s_main_menu_layer) {
     menu_layer_reload_data(s_main_menu_layer);
+    /* The visible set may have shrunk past the current selection (e.g. a fast
+     * just stopped, removing the timer/stop/cancel rows). Clamp it back to a
+     * valid row so the highlight does not land on an empty slot. */
+    MenuIndex sel = menu_layer_get_selected_index(s_main_menu_layer);
+    if (sel.row >= visible) {
+      menu_layer_set_selected_index(
+        s_main_menu_layer, (MenuIndex){.row = 0, .section = 0},
+        MenuRowAlignTop, false);
+    }
   }
 }
 
@@ -1002,7 +1057,8 @@ static void ff_menu_draw_row(GContext *ctx, const Layer *cell_layer,
   if (!ctx_data || cell_index->row >= ctx_data->count) {
     return;
   }
-  const SimpleMenuItem *item = &ctx_data->items[cell_index->row];
+  int row = ctx_data->map ? ctx_data->map[cell_index->row] : (int)cell_index->row;
+  const SimpleMenuItem *item = &ctx_data->items[row];
   GRect bounds = layer_get_bounds(cell_layer);
   bool highlighted = menu_cell_layer_is_highlighted(cell_layer);
   GColor background = highlighted ? GColorBlack : GColorWhite;
@@ -1030,9 +1086,13 @@ static void ff_menu_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, v
   if (!ctx_data || cell_index->row >= ctx_data->count) {
     return;
   }
-  const SimpleMenuItem *item = &ctx_data->items[cell_index->row];
+  int row = ctx_data->map ? ctx_data->map[cell_index->row] : (int)cell_index->row;
+  const SimpleMenuItem *item = &ctx_data->items[row];
   if (item->callback) {
-    item->callback(cell_index->row, NULL);
+    /* Pass the *backing* item index so callbacks that use it (e.g. the debug
+     * menu switch) see the real item, not the visible-row position. For NULL-map
+     * menus the two are identical. */
+    item->callback(row, NULL);
   }
 }
 
@@ -1932,7 +1992,8 @@ static void menu_window_load(Window *window) {
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
-  s_main_menu_ctx = (FfMenuCtx){ s_main_menu_items, MAIN_MENU_ITEM_COUNT, "FastForge" };
+  s_main_menu_ctx = (FfMenuCtx){ s_main_menu_items, MAIN_MENU_ITEM_COUNT,
+                                  "FastForge", s_main_menu_map };
   s_main_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_main_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_main_menu_layer));
   sync_main_menu_state();
@@ -2209,7 +2270,7 @@ static void presets_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   s_presets_menu_ctx = (FfMenuCtx){ s_presets_menu_items, PRESET_MENU_ITEM_COUNT,
-                                    "Start New Fast" };
+                                    "Start New Fast", NULL };
   s_presets_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_presets_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_presets_menu_layer));
 }
