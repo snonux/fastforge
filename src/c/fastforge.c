@@ -85,7 +85,9 @@ static TextLayer *s_goal_time_layer;
 static TextLayer *s_goal_stage_layer;
 static TextLayer *s_goal_hint_layer;
 static TextLayer *s_stop_confirm_title_layer;
-static TextLayer *s_stop_confirm_body_layer;
+static TextLayer *s_stop_confirm_caption_layer; /* "Fasted" caption above the hero time */
+static TextLayer *s_stop_confirm_time_layer;    /* hero fasting time, large font */
+static TextLayer *s_stop_confirm_body_layer;    /* "Save to history?" question */
 static TextLayer *s_stop_confirm_hint_layer;
 
 static TextLayer *s_settings_title_layer;
@@ -141,7 +143,7 @@ static char s_settings_dev_text[32];
 #endif
 static char s_menu_stop_subtitle[32];
 static char s_menu_cancel_subtitle[32];
-static char s_stop_confirm_body_text[40];
+static char s_stop_confirm_time_text[12];
 static char s_history_title_text[32];
 static char s_placeholder_title_text[24];
 static char s_placeholder_body_text[160];
@@ -2124,7 +2126,19 @@ static void stop_confirm_window_load(Window *window) {
   int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
   int16_t title_y = oy + 2;
   int16_t hint_y = bounds.size.h - oy - FF_H_HINT;
-  int16_t body_y = title_y + FF_H_SCREEN_TITLE + 12;
+  int16_t caption_y = title_y + FF_H_SCREEN_TITLE + 8;
+  int16_t time_y = caption_y + FF_H_SUB_BOLD + 4;
+  int16_t question_y = time_y + FF_H_HERO + 8;
+
+  /* The hero time uses the same round inset as the timer screen so
+   * BITHAM_42_BOLD "00:00:00" fits inside the round face. On rectangular
+   * platforms the timer screen uses a zero hero inset, so match that. */
+#ifdef PBL_ROUND
+  const int16_t hero_inset = bounds.size.w / 12;
+#else
+  const int16_t hero_inset = 0;
+#endif
+  const int16_t hero_w = bounds.size.w - 2 * hero_inset;
 
   window_set_click_config_provider(window, stop_confirm_click_config_provider);
 
@@ -2133,10 +2147,20 @@ static void stop_confirm_window_load(Window *window) {
                                                   GColorBlack, GColorClear, false);
   text_layer_set_text(s_stop_confirm_title_layer, "STOP FAST?");
 
-  s_stop_confirm_body_layer = create_text_layer(GRect(ox, body_y, cw, hint_y - body_y - 4),
+  s_stop_confirm_caption_layer = create_text_layer(GRect(ox, caption_y, cw, FF_H_SUB_BOLD),
+                                                    GTextAlignmentCenter, FF_FONT_SUB_BOLD,
+                                                    GColorBlack, GColorClear, false);
+  text_layer_set_text(s_stop_confirm_caption_layer, "Fasted");
+
+  s_stop_confirm_time_layer = create_text_layer(GRect(hero_inset, time_y, hero_w, FF_H_HERO),
+                                                 GTextAlignmentCenter, FF_FONT_HERO,
+                                                 GColorBlack, GColorClear, false);
+  text_layer_set_text(s_stop_confirm_time_layer, s_stop_confirm_time_text);
+
+  s_stop_confirm_body_layer = create_text_layer(GRect(ox, question_y, cw, hint_y - question_y - 4),
                                                  GTextAlignmentCenter, FF_FONT_SUB,
                                                  GColorBlack, GColorClear, true);
-  text_layer_set_text(s_stop_confirm_body_layer, s_stop_confirm_body_text);
+  text_layer_set_text(s_stop_confirm_body_layer, "Save to history?");
 
   s_stop_confirm_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
                                                   GTextAlignmentCenter, FF_FONT_HINT,
@@ -2144,6 +2168,8 @@ static void stop_confirm_window_load(Window *window) {
   text_layer_set_text(s_stop_confirm_hint_layer, "SEL save  DN discard");
 
   layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_caption_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_time_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_body_layer));
   layer_add_child(window_layer, text_layer_get_layer(s_stop_confirm_hint_layer));
 }
@@ -2152,6 +2178,10 @@ static void stop_confirm_window_unload(Window *window) {
   (void)window;
   text_layer_destroy(s_stop_confirm_title_layer);
   s_stop_confirm_title_layer = NULL;
+  text_layer_destroy(s_stop_confirm_caption_layer);
+  s_stop_confirm_caption_layer = NULL;
+  text_layer_destroy(s_stop_confirm_time_layer);
+  s_stop_confirm_time_layer = NULL;
   text_layer_destroy(s_stop_confirm_body_layer);
   s_stop_confirm_body_layer = NULL;
   text_layer_destroy(s_stop_confirm_hint_layer);
@@ -2166,12 +2196,9 @@ static void show_stop_confirmation(void) {
   if (elapsed < 0) {
     elapsed = 0;
   }
-  char elapsed_text[12];
-  format_hhmmss(elapsed, elapsed_text, sizeof(elapsed_text));
-  snprintf(s_stop_confirm_body_text, sizeof(s_stop_confirm_body_text),
-           "Fasted %s\nSave to history?", elapsed_text);
-  if (s_stop_confirm_body_layer) {
-    text_layer_set_text(s_stop_confirm_body_layer, s_stop_confirm_body_text);
+  format_hhmmss(elapsed, s_stop_confirm_time_text, sizeof(s_stop_confirm_time_text));
+  if (s_stop_confirm_time_layer) {
+    text_layer_set_text(s_stop_confirm_time_layer, s_stop_confirm_time_text);
   }
   safe_push_window(s_stop_confirm_window, true);
 }
