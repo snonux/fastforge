@@ -37,6 +37,7 @@ static Window *s_presets_window;
 static Window *s_settings_window;
 static Window *s_stats_window;
 static Window *s_detail_window;
+static Window *s_about_window;
 static Window *s_history_window;
 static Window *s_history_edit_window;
 static Window *s_running_edit_window;
@@ -96,6 +97,9 @@ static SettingsField s_settings_field = SETTINGS_FIELD_TARGET;
 static TextLayer *s_placeholder_title_layer;
 static TextLayer *s_placeholder_body_layer;
 static TextLayer *s_placeholder_hint_layer;
+static TextLayer *s_about_title_layer;
+static TextLayer *s_about_body_layer;
+static TextLayer *s_about_hint_layer;
 static TextLayer *s_history_title_layer;
 static TextLayer *s_stats_title_layer;
 static TextLayer *s_stats_value_layer;
@@ -1558,9 +1562,10 @@ static void menu_settings_callback(int index, void *context) {
 static void menu_about_callback(int index, void *context) {
   (void)index;
   (void)context;
-  show_placeholder_window("ABOUT",
-                          "By Paul Buetow\n\nSource code:\ngithub.com/\nsnonux/fastforge",
-                          "BACK Menu");
+  /* Dedicated About window (not the shared placeholder) so the body can use a
+   * smaller font: the source URL then fits as a clean host/path split instead
+   * of wrapping into a broken three-line mess at the large body font. */
+  safe_push_window(s_about_window, true);
 }
 
 /* Start a fast whose alarm fires after 10 seconds, used for quick dev/test
@@ -2571,6 +2576,67 @@ static void detail_window_unload(Window *window) {
   s_detail_scroll_layer = NULL;
 }
 
+/* The About screen uses a smaller body font than the shared placeholder so the
+ * source URL fits as a clean host/path split (github.com/ on one line,
+ * snonux/fastforge on the next) instead of wrapping into a broken three-line
+ * jumble at the large body font. Content is short enough that it never needs
+ * to scroll. */
+#define ABOUT_BODY_TEXT \
+  "By Paul Buetow\n\nSource code:\ngithub.com/\nsnonux/fastforge"
+
+static void about_dismiss_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_about_window, true);
+}
+
+static void about_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, about_dismiss_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, about_dismiss_handler);
+}
+
+static void about_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
+  int16_t title_y = oy + 2;
+  int16_t hint_y = bounds.size.h - oy - FF_H_HINT;
+  int16_t body_y = title_y + FF_H_SCREEN_TITLE + 8;
+
+  window_set_click_config_provider(window, about_click_config_provider);
+
+  s_about_title_layer = create_text_layer(GRect(ox, title_y, cw, FF_H_SCREEN_TITLE),
+                                          GTextAlignmentCenter, FF_FONT_SCREEN_TITLE,
+                                          GColorBlack, GColorClear, false);
+  text_layer_set_text(s_about_title_layer, "ABOUT");
+
+  s_about_body_layer = create_text_layer(GRect(ox, body_y, cw, hint_y - body_y - 4),
+                                         GTextAlignmentCenter, FF_FONT_SUB,
+                                         GColorBlack, GColorClear, true);
+  text_layer_set_text(s_about_body_layer, ABOUT_BODY_TEXT);
+
+  s_about_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
+                                          GTextAlignmentCenter, FF_FONT_HINT,
+                                          GColorBlack, GColorClear, false);
+  text_layer_set_text(s_about_hint_layer, "BACK menu");
+
+  layer_add_child(window_layer, text_layer_get_layer(s_about_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_about_body_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_about_hint_layer));
+}
+
+static void about_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_about_title_layer);
+  s_about_title_layer = NULL;
+  text_layer_destroy(s_about_body_layer);
+  s_about_body_layer = NULL;
+  text_layer_destroy(s_about_hint_layer);
+  s_about_hint_layer = NULL;
+}
+
 static void menu_window_appear(Window *window) {
   (void)window;
   sync_main_menu_state();
@@ -2766,6 +2832,12 @@ static void init_info_windows(void) {
     .unload = detail_window_unload
   }, NULL);
   window_set_background_color(s_detail_window, theme_surface_background_color());
+
+  s_about_window = create_window_with_handlers((WindowHandlers) {
+    .load = about_window_load,
+    .unload = about_window_unload
+  }, NULL);
+  window_set_background_color(s_about_window, theme_surface_background_color());
 }
 
 #ifdef DEBUG
@@ -2789,6 +2861,7 @@ static void init_windows(void) {
 
 static void destroy_windows(void) {
   window_destroy(s_detail_window);
+  window_destroy(s_about_window);
 #ifdef DEBUG
   window_destroy(s_debug_window);
 #endif
