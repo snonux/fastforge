@@ -732,8 +732,11 @@ static void refresh_timer_view_idle(void) {
   char target_text[20];
   format_duration_hours_minutes((time_t)global_target_minutes * 60,
                                 target_text, sizeof(target_text));
-  snprintf(s_detail_text, sizeof(s_detail_text), "Target %s", target_text);
-  snprintf(s_stage_text, sizeof(s_stage_text), "Stage: --");
+  /* Page 1 hero counter mirrors the page-0 hero (elapsed is 0 while idle);
+   * the target moves to the secondary line so it isn't squeezed into the hero
+   * font. */
+  format_hhmmss(0, s_detail_text, sizeof(s_detail_text));
+  snprintf(s_stage_text, sizeof(s_stage_text), "Target %s", target_text);
 }
 
 static void refresh_timer_view_running(time_t elapsed) {
@@ -757,15 +760,15 @@ static void refresh_timer_view_running(time_t elapsed) {
       format_hhmmss(-remaining, s_timer_text, sizeof(s_timer_text));
     }
     refresh_timer_eta_text(target_seconds, remaining);
-    /* Page 1 reuses the detail layer as a second large line: elapsed time. */
+    /* Page 1 hero counter: elapsed time, same hero font as the page-0 hero. */
     format_hhmmss(elapsed, s_detail_text, sizeof(s_detail_text));
   } else {
     /* Open-ended fast: nothing to count down to, so the big number counts up
-     * and there is no goal clock to show. */
+     * and there is no goal clock to show. Page 1 mirrors the elapsed hero. */
     snprintf(s_title_text, sizeof(s_title_text), dev ? "OPEN FAST*" : "OPEN FAST");
     format_hhmmss(elapsed, s_timer_text, sizeof(s_timer_text));
     refresh_timer_eta_text(target_seconds, 0);
-    snprintf(s_detail_text, sizeof(s_detail_text), "No goal");
+    format_hhmmss(elapsed, s_detail_text, sizeof(s_detail_text));
   }
 
   snprintf(s_stage_text, sizeof(s_stage_text), "Stage: %s",
@@ -1832,16 +1835,16 @@ static void timer_window_load(Window *window) {
                                   FF_FONT_BIG,
                                   GColorBlack, GColorClear, false);
 #endif
-  /* Page 1 reuses the detail layer as a large elapsed-time / target line.
-   * GOTHIC_28_BOLD (not the 42 pt hero) so label text like "Target 16h 00m"
-   * still fits the round face. */
-  s_detail_layer = create_text_layer(GRect(ox, oy + 50, cw, FF_H_BIG),
+  /* Page 1 hero counter: same hero font/size/position as the page-0 hero so
+   * the big number stays stationary when the user pages up/down. The layer is
+   * hidden on page 0, so it never visually overlaps the page-0 hero. */
+  s_detail_layer = create_text_layer(GRect(hero_inset, hero_y, hero_w, FF_H_HERO),
                                      GTextAlignmentCenter,
-                                     FF_FONT_BIG,
+                                     FF_FONT_HERO,
                                      GColorBlack, GColorClear, false);
   s_progress_layer = layer_create(GRect(ox + 8, prog_y, cw - 16, 14));
   layer_set_update_proc(s_progress_layer, timer_progress_update_proc);
-  s_stage_layer = create_text_layer(GRect(ox, oy + 94, cw, FF_H_BODY),
+  s_stage_layer = create_text_layer(GRect(ox, hero_y + FF_H_HERO + 6, cw, FF_H_BODY),
                                     GTextAlignmentCenter,
                                     FF_FONT_BODY_BOLD,
                                     GColorBlack, GColorClear, false);
