@@ -43,9 +43,11 @@ static void normalize_loaded_data(void) {
     global_min_fast_minutes = DEFAULT_MIN_FAST_MINUTES;
   }
 
-  if (current_fast.start_time != 0 && current_fast.target_minutes == 0) {
-    current_fast.target_minutes = global_target_minutes;
-  }
+  /* target_minutes == 0 on a running fast always means "open-ended" —
+   * fast_start() resolves a real target before saving, and only
+   * fast_start_open_ended() persists 0 on purpose. Coercing it to
+   * global_target_minutes here (as this used to do) silently turned an
+   * open-ended fast back into a countdown fast on the next app launch. */
 
   if (current_fast.end_time != 0 && current_fast.end_time < current_fast.start_time) {
     current_fast.end_time = 0;
