@@ -30,6 +30,16 @@ enum {
   PRESET_MENU_ITEM_COUNT = 10
 };
 
+/* Target duration behind each preset, in whole hours; 0 marks a preset with
+ * no fixed duration (Open-ended, and the dev 10s test). Shared by the accent
+ * colour ramp and the presets menu's projected "Ends HH:MM" line. */
+static const uint8_t s_preset_target_hours[PRESET_MENU_ITEM_COUNT] = {
+  [PRESET_MENU_INDEX_16H] = 16, [PRESET_MENU_INDEX_18H] = 18, [PRESET_MENU_INDEX_20H] = 20,
+  [PRESET_MENU_INDEX_24H] = 24, [PRESET_MENU_INDEX_26H] = 26, [PRESET_MENU_INDEX_28H] = 28,
+  [PRESET_MENU_INDEX_30H] = 30, [PRESET_MENU_INDEX_36H] = 36,
+  [PRESET_MENU_INDEX_OPEN] = 0, [PRESET_MENU_INDEX_10S] = 0
+};
+
 static Window *s_menu_window;
 static Window *s_timer_window;
 static Window *s_goal_window;
@@ -51,6 +61,16 @@ static SimpleMenuSection s_presets_menu_sections[1];
 static SimpleMenuItem s_main_menu_items[MAIN_MENU_ITEM_COUNT];
 static char s_menu_resume_subtitle[40];
 static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
+/* Left-edge accent bar per row, parallel to the item arrays above; populated
+ * once by configure_main_menu_items()/configure_preset_items(). */
+static GColor s_main_menu_accent_colors[MAIN_MENU_ITEM_COUNT];
+static GColor s_presets_menu_accent_colors[PRESET_MENU_ITEM_COUNT];
+/* "Ends HH:MM" projection per preset, refreshed every time the presets window
+ * appears (the projection is relative to "now", so it must be recomputed on
+ * each visit, not just once at startup). Rows with no fixed duration (Open
+ * ended, dev 10s) are left as empty strings, which ff_menu_draw_row skips. */
+static char s_presets_menu_end_time_lines[PRESET_MENU_ITEM_COUNT][32];
+static const char *s_presets_menu_end_time_ptrs[PRESET_MENU_ITEM_COUNT];
 
 /* Context passed to the generic MenuLayer callbacks so the same draw/select
  * code serves the main, preset, and debug menus.
@@ -58,12 +78,26 @@ static SimpleMenuItem s_presets_menu_items[PRESET_MENU_ITEM_COUNT];
  * `map` is an optional indirection table: when non-NULL, menu row R is backed
  * by items[map[R]] instead of items[R]. The main menu uses this to hide items
  * that make no sense in the current state (e.g. "Stop Current Fast" when no
- * fast is running). Preset/debug menus leave `map` NULL for an identity map. */
+ * fast is running). Preset/debug menus leave `map` NULL for an identity map.
+ *
+ * `accent_colors` is an optional array parallel to `items` (indexed by the
+ * *backing* item index, same as `map` resolves to, not the visible row) that
+ * draws a slim left-edge bar per row, the same device already used for
+ * History's stage-color bar. NULL means no bar (used for the debug menu).
+ *
+ * `third_lines` is an optional array of strings, also parallel to `items`,
+ * drawn as an extra line below the subtitle (used by the presets menu to
+ * show the projected end-of-fast clock time). A NULL or empty entry for a
+ * given row skips the line (e.g. Open-ended has no fixed end time). NULL
+ * disables the extra line for the whole menu, which also keeps cell height
+ * at the normal two-line size. */
 typedef struct {
   const SimpleMenuItem *items;
   int count;
   const char *header;
   const int *map;
+  const GColor *accent_colors;
+  const char *const *third_lines;
 } FfMenuCtx;
 static FfMenuCtx s_main_menu_ctx;
 static FfMenuCtx s_presets_menu_ctx;
@@ -346,6 +380,37 @@ static GColor stage_color_for_level(uint8_t level) {
     case 1: return GColorOrange;               /* FAT BURN     */
     default: return GColorDarkGray;            /* GLYCOGEN/none*/
   }
+}
+
+/* One fixed accent colour per main-menu item, so the row keeps its identity
+ * regardless of which mutually-exclusive state items (Start/Resume/Current
+ * Timer, Stop/Cancel) happen to be visible. Start New Fast and Current Timer
+ * share the running-timer blue because they lead to the same screen and are
+ * never shown together. */
+static GColor main_menu_accent_color_for_index(int index) {
+  if (!is_color_platform()) {
+    return GColorBlack;
+  }
+  switch (index) {
+    case MAIN_MENU_INDEX_START_NEW:
+    case MAIN_MENU_INDEX_CURRENT_TIMER:  return GColorVividCerulean;
+    case MAIN_MENU_INDEX_RESUME_LAST:    return GColorPictonBlue;
+    case MAIN_MENU_INDEX_STOP_CURRENT:   return GColorSunsetOrange;
+    case MAIN_MENU_INDEX_CANCEL_CURRENT: return GColorDarkCandyAppleRed;
+    case MAIN_MENU_INDEX_HISTORY:        return GColorIndigo;
+    case MAIN_MENU_INDEX_STATS:          return GColorDukeBlue;
+    case MAIN_MENU_INDEX_SETTINGS:       return GColorCadetBlue;
+    default:                             return GColorLiberty; /* About */
+  }
+}
+
+/* Preset accent colour reuses the fasting-stage ramp keyed to the preset's
+ * own target duration, so the list previews the metabolic depth each preset
+ * commits to. Open-ended (no fixed target) and the dev 10s preset fall
+ * through to level 0 (neutral grey) since neither has a real duration. */
+static GColor preset_menu_accent_color_for_index(int index) {
+  time_t target_seconds = (time_t)s_preset_target_hours[index] * 3600;
+  return stage_color_for_level(stage_level_for_elapsed(target_seconds));
 }
 
 static bool timer_goal_reached_for_elapsed(time_t elapsed_seconds) {
@@ -633,7 +698,7 @@ static void debug_window_load(Window *window) {
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   debug_refresh_menu();
   s_debug_menu_ctx = (FfMenuCtx){ s_debug_menu_items, (int)ARRAY_LENGTH(s_debug_menu_items),
-                                  s_debug_menu_clock_text, NULL };
+                                  s_debug_menu_clock_text, NULL, NULL, NULL };
   s_debug_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_debug_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_debug_menu_layer));
 }
@@ -1030,10 +1095,19 @@ static int16_t ff_menu_get_header_height(MenuLayer *menu_layer, uint16_t section
 
 static int16_t ff_menu_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
   (void)menu_layer;
-  (void)cell_index;
-  (void)data;
-  /* One bold title line plus one regular subtitle line, with padding. */
-  return FF_H_MENU_TITLE + FF_H_MENU_SUB + 12;
+  /* One bold title line plus one regular subtitle line, with padding; rows
+   * that also carry a third_lines entry (e.g. presets' "Ends HH:MM") grow by
+   * one more subtitle-sized line instead of paying for it on every row. */
+  int16_t height = FF_H_MENU_TITLE + FF_H_MENU_SUB + 12;
+  const FfMenuCtx *ctx_data = data;
+  if (ctx_data && ctx_data->third_lines && cell_index->row < ctx_data->count) {
+    int row = ctx_data->map ? ctx_data->map[cell_index->row] : (int)cell_index->row;
+    const char *third_line = ctx_data->third_lines[row];
+    if (third_line && third_line[0] != '\0') {
+      height += FF_H_MENU_SUB;
+    }
+  }
+  return height;
 }
 
 static void ff_menu_draw_header(GContext *ctx, const Layer *cell_layer,
@@ -1066,6 +1140,12 @@ static void ff_menu_draw_row(GContext *ctx, const Layer *cell_layer,
 
   graphics_context_set_fill_color(ctx, background);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  if (ctx_data->accent_colors) {
+    graphics_context_set_fill_color(ctx, ctx_data->accent_colors[row]);
+    graphics_fill_rect(ctx, GRect(0, 0, 4, bounds.size.h), 0, GCornerNone);
+  }
+
   graphics_context_set_text_color(ctx, foreground);
 
   graphics_draw_text(ctx, item->title ? item->title : "",
@@ -1076,6 +1156,13 @@ static void ff_menu_draw_row(GContext *ctx, const Layer *cell_layer,
     graphics_draw_text(ctx, item->subtitle,
                        fonts_get_system_font(FF_FONT_MENU_SUB),
                        GRect(6, FF_H_MENU_TITLE + 4, bounds.size.w - 12, FF_H_MENU_SUB),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
+  const char *third_line = ctx_data->third_lines ? ctx_data->third_lines[row] : NULL;
+  if (third_line && third_line[0] != '\0') {
+    graphics_draw_text(ctx, third_line,
+                       fonts_get_system_font(FF_FONT_MENU_SUB),
+                       GRect(6, FF_H_MENU_TITLE + 4 + FF_H_MENU_SUB, bounds.size.w - 12, FF_H_MENU_SUB),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
 }
@@ -1993,7 +2080,7 @@ static void menu_window_load(Window *window) {
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   s_main_menu_ctx = (FfMenuCtx){ s_main_menu_items, MAIN_MENU_ITEM_COUNT,
-                                  "FastForge", s_main_menu_map };
+                                  "FastForge", s_main_menu_map, s_main_menu_accent_colors, NULL };
   s_main_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_main_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_main_menu_layer));
   sync_main_menu_state();
@@ -2264,15 +2351,46 @@ static void show_stop_confirmation(void) {
   safe_push_window(s_stop_confirm_window, true);
 }
 
+/* Projects each preset's target duration onto the current wall-clock time, as
+ * if the fast were started right now, so the list can be scanned for "which
+ * of these actually finishes at a sane hour". Recomputed on every appearance
+ * since it is relative to "now"; presets with no fixed duration (Open ended,
+ * dev 10s) are left blank. */
+static void refresh_presets_menu_end_times(void) {
+#if FASTFORGE_SHOW_GOAL_CLOCK
+  time_t now = fastforge_now();
+  for (int i = 0; i < PRESET_MENU_ITEM_COUNT; i++) {
+    if (s_preset_target_hours[i] == 0) {
+      s_presets_menu_end_time_lines[i][0] = '\0';
+      continue;
+    }
+    time_t end_time = now + (time_t)s_preset_target_hours[i] * 3600;
+    char clock_text[20];
+    format_clock_time(end_time, now, clock_text, sizeof(clock_text));
+    snprintf(s_presets_menu_end_time_lines[i], sizeof(s_presets_menu_end_time_lines[i]),
+             "Ends %s", clock_text);
+  }
+  if (s_presets_menu_layer) {
+    menu_layer_reload_data(s_presets_menu_layer);
+  }
+#endif
+}
+
 static void presets_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
   ContentRect cr = content_rect(bounds);
   GRect menu_bounds = GRect(cr.ox, cr.oy, cr.cw, bounds.size.h - 2 * cr.oy);
   s_presets_menu_ctx = (FfMenuCtx){ s_presets_menu_items, PRESET_MENU_ITEM_COUNT,
-                                    "Start New Fast", NULL };
+                                    "Start New Fast", NULL, s_presets_menu_accent_colors,
+                                    s_presets_menu_end_time_ptrs };
   s_presets_menu_layer = create_ff_menu_layer(window, menu_bounds, &s_presets_menu_ctx);
   layer_add_child(window_layer, menu_layer_get_layer(s_presets_menu_layer));
+}
+
+static void presets_window_appear(Window *window) {
+  (void)window;
+  refresh_presets_menu_end_times();
 }
 
 static void presets_window_unload(Window *window) {
@@ -2932,6 +3050,10 @@ static void configure_main_menu_items(void) {
     .num_items = MAIN_MENU_ITEM_COUNT,
     .items = s_main_menu_items
   };
+
+  for (int i = 0; i < MAIN_MENU_ITEM_COUNT; i++) {
+    s_main_menu_accent_colors[i] = main_menu_accent_color_for_index(i);
+  }
 }
 
 static void configure_preset_items(void) {
@@ -2994,6 +3116,11 @@ static void configure_preset_items(void) {
     .num_items = PRESET_MENU_ITEM_COUNT,
     .items = s_presets_menu_items
   };
+
+  for (int i = 0; i < PRESET_MENU_ITEM_COUNT; i++) {
+    s_presets_menu_accent_colors[i] = preset_menu_accent_color_for_index(i);
+    s_presets_menu_end_time_ptrs[i] = s_presets_menu_end_time_lines[i];
+  }
 }
 
 static void init_primary_windows(void) {
@@ -3027,6 +3154,7 @@ static void init_primary_windows(void) {
 
   s_presets_window = create_window_with_handlers((WindowHandlers) {
     .load = presets_window_load,
+    .appear = presets_window_appear,
     .unload = presets_window_unload
   }, NULL);
   window_set_background_color(s_presets_window,
