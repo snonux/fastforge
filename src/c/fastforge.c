@@ -51,6 +51,7 @@ static Window *s_detail_window;
 static Window *s_about_window;
 static Window *s_history_window;
 static Window *s_history_edit_window;
+static Window *s_delete_confirm_window;
 static Window *s_running_edit_window;
 
 static MenuLayer *s_main_menu_layer;
@@ -131,6 +132,15 @@ static TextLayer *s_stop_confirm_caption_layer; /* "Fasted" caption above the he
 static TextLayer *s_stop_confirm_time_layer;    /* hero fasting time, large font */
 static TextLayer *s_stop_confirm_body_layer;    /* "Save to history?" question */
 static TextLayer *s_stop_confirm_hint_layer;
+
+/* Delete-confirmation window (s31): shown before a history entry is removed.
+ * Mirrors the stop-confirm layout but swaps the hero time for a two-line
+ * body describing the entry being deleted (duration + end datetime), so the
+ * user can confirm they are removing the right fast. */
+static TextLayer *s_delete_confirm_title_layer;
+static TextLayer *s_delete_confirm_body_layer;
+static TextLayer *s_delete_confirm_hint_layer;
+static char s_delete_confirm_body_text[56];
 
 static TextLayer *s_settings_title_layer;
 static TextLayer *s_settings_target_layer;
@@ -236,6 +246,7 @@ static void refresh_settings_window_content(void);
 static MenuLayer *create_ff_menu_layer(Window *window, GRect bounds, FfMenuCtx *ctx);
 void fastforge_detail_layout_refresh(void);
 static void show_stop_confirmation(void);
+static void show_delete_confirmation(void);
 #ifdef DEBUG
 static void show_debug_menu_window(void);
 #endif
@@ -1529,13 +1540,67 @@ static void history_edit_back_click_handler(ClickRecognizerRef recognizer, void 
 static void history_edit_delete_click_handler(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer;
   (void)context;
-  if (!history_delete_entry(s_history_edit_index)) {
-    return;
+  /* Instead of removing the entry outright, push a confirmation window so the
+   * user can verify which fast they are deleting. The actual deletion happens
+   * in delete_confirm_delete_handler() once the user confirms. */
+  show_delete_confirmation();
+}
+
+/* Delete-confirmation window click handlers (s31). SEL/UP confirms the
+ * deletion; DOWN/BACK cancels and returns to the edit screen. */
+static void delete_confirm_delete_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  bool deleted = false;
+  if (s_history_edit_index >= 0 && s_history_edit_index < history_count) {
+    deleted = history_delete_entry(s_history_edit_index);
+  }
+  /* Pop the edit window first while this confirm window still sits on top of
+   * it, so the edit window's .appear callback never re-renders a now-gone entry
+   * during the transition. Then remove this confirm window to land back on the
+   * history list. */
+  if (window_stack_contains_window(s_history_edit_window)) {
+    window_stack_remove(s_history_edit_window, false);
   }
   s_history_edit_index = -1;
-  refresh_timer_view();
-  refresh_stats_window_content();
-  window_stack_remove(s_history_edit_window, true);
+  s_history_edit_dirty = false;
+  window_stack_remove(s_delete_confirm_window, true);
+  if (deleted) {
+    refresh_timer_view();
+    refresh_stats_window_content();
+  }
+}
+
+static void delete_confirm_cancel_handler(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer;
+  (void)context;
+  window_stack_remove(s_delete_confirm_window, true);
+}
+
+static void delete_confirm_click_config_provider(void *context) {
+  (void)context;
+  window_single_click_subscribe(BUTTON_ID_SELECT, delete_confirm_delete_handler);
+  window_single_click_subscribe(BUTTON_ID_UP, delete_confirm_delete_handler);
+  window_single_click_subscribe(BUTTON_ID_DOWN, delete_confirm_cancel_handler);
+  window_single_click_subscribe(BUTTON_ID_BACK, delete_confirm_cancel_handler);
+}
+
+static void show_delete_confirmation(void) {
+  if (s_history_edit_index < 0 || s_history_edit_index >= history_count) {
+    return;
+  }
+  FastEntry *entry = &history[s_history_edit_index];
+  char duration_text[20];
+  char end_text[24];
+  format_duration_hours_minutes(entry_duration_seconds(entry), duration_text,
+                                 sizeof(duration_text));
+  format_entry_datetime(entry->end_time, end_text, sizeof(end_text));
+  snprintf(s_delete_confirm_body_text, sizeof(s_delete_confirm_body_text),
+           "%s ending %s", duration_text, end_text);
+  if (s_delete_confirm_body_layer) {
+    text_layer_set_text(s_delete_confirm_body_layer, s_delete_confirm_body_text);
+  }
+  safe_push_window(s_delete_confirm_window, true);
 }
 
 static void history_edit_click_config_provider(void *context) {
@@ -2349,6 +2414,50 @@ static void show_stop_confirmation(void) {
     text_layer_set_text(s_stop_confirm_time_layer, s_stop_confirm_time_text);
   }
   safe_push_window(s_stop_confirm_window, true);
+}
+
+/* Delete-confirmation window (s31). Title + a wrapped body describing the
+ * fast being removed + a one-line control hint, mirroring stop_confirm but
+ * without the hero time (the body already carries the duration). */
+static void delete_confirm_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  ContentRect cr = content_rect(bounds);
+  int16_t ox = cr.ox, oy = cr.oy, cw = cr.cw;
+  int16_t title_y = oy + 2;
+  int16_t hint_y = bounds.size.h - oy - FF_H_HINT;
+  int16_t body_y = title_y + FF_H_SCREEN_TITLE + 12;
+
+  window_set_click_config_provider(window, delete_confirm_click_config_provider);
+
+  s_delete_confirm_title_layer = create_text_layer(GRect(ox, title_y, cw, FF_H_SCREEN_TITLE),
+                                                     GTextAlignmentCenter, FF_FONT_SCREEN_TITLE,
+                                                     GColorBlack, GColorClear, false);
+  text_layer_set_text(s_delete_confirm_title_layer, "DELETE FAST?");
+
+  s_delete_confirm_body_layer = create_text_layer(GRect(ox, body_y, cw, hint_y - body_y - 4),
+                                                   GTextAlignmentCenter, FF_FONT_SUB,
+                                                   GColorBlack, GColorClear, true);
+  text_layer_set_text(s_delete_confirm_body_layer, s_delete_confirm_body_text);
+
+  s_delete_confirm_hint_layer = create_text_layer(GRect(ox, hint_y, cw, FF_H_HINT),
+                                                   GTextAlignmentCenter, FF_FONT_HINT,
+                                                   GColorBlack, GColorClear, false);
+  text_layer_set_text(s_delete_confirm_hint_layer, "SEL delete  DN cancel");
+
+  layer_add_child(window_layer, text_layer_get_layer(s_delete_confirm_title_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_delete_confirm_body_layer));
+  layer_add_child(window_layer, text_layer_get_layer(s_delete_confirm_hint_layer));
+}
+
+static void delete_confirm_window_unload(Window *window) {
+  (void)window;
+  text_layer_destroy(s_delete_confirm_title_layer);
+  s_delete_confirm_title_layer = NULL;
+  text_layer_destroy(s_delete_confirm_body_layer);
+  s_delete_confirm_body_layer = NULL;
+  text_layer_destroy(s_delete_confirm_hint_layer);
+  s_delete_confirm_hint_layer = NULL;
 }
 
 /* Projects each preset's target duration onto the current wall-clock time, as
@@ -3175,6 +3284,12 @@ static void init_history_windows(void) {
   }, history_edit_click_config_provider);
   window_set_background_color(s_history_edit_window, theme_surface_background_color());
 
+  s_delete_confirm_window = create_window_with_handlers((WindowHandlers) {
+    .load = delete_confirm_window_load,
+    .unload = delete_confirm_window_unload
+  }, NULL);
+  window_set_background_color(s_delete_confirm_window, theme_surface_background_color());
+
   s_running_edit_window = create_window_with_handlers((WindowHandlers) {
     .load = running_edit_window_load,
     .appear = running_edit_window_appear,
@@ -3241,6 +3356,7 @@ static void destroy_windows(void) {
   window_destroy(s_stats_window);
   window_destroy(s_running_edit_window);
   window_destroy(s_history_edit_window);
+  window_destroy(s_delete_confirm_window);
   window_destroy(s_history_window);
   window_destroy(s_presets_window);
   window_destroy(s_goal_window);
