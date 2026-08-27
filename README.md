@@ -2,6 +2,8 @@
 
 FastForge is a Pebble watchapp for intermittent fasting tracking, built with the Rebble SDK.
 
+[FastForge on the Pebble Appstore](https://apps.repebble.com/fastforge_a488436292ad4eb69d2a61d8)
+
 ## Screenshots
 
 :| Pebble Round 2 — Menu | Pebble Round 2 — Countdown | Pebble Round 2 — History | Pebble Time 2 — Countdown |
